@@ -1,4 +1,6 @@
 #include <Audio.h>
+// use bandlimit waveforms from https://github.com/MarkTillotson/Audio/tree/band_limited_waveforms
+#define USE_BANDLIMIT_WAVEFORMS 1
 
 // set SYNTH_DEBUG to enable debug logging (1=most,2=all messages)
 #define SYNTH_DEBUG 1
@@ -34,8 +36,18 @@ short delaylineR[DELAY_LENGTH];
 #define AMEMORY 50
 
 // switch between USB and UART MIDI
+#define USB_MIDI 1
 #ifdef USB_MIDI
-#define SYNTH_SERIAL Serial1
+
+#include "USBHost_t36.h"
+USBHost myusb;
+USBHub hub1(myusb);
+USBHub hub2(myusb);
+USBHub hub3(myusb);
+MIDIDevice usbMIDI1(myusb);
+MIDIDevice usbMIDI2(myusb);
+#define SYNTH_SERIAL Serial
+
 #else // 'real' MIDI via UART
 #define SYNTH_SERIAL Serial
 #include <MIDI.h>
@@ -47,9 +59,11 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 //////////////////////////////////////////////////////////////////////
 struct Oscillator {
   AudioSynthWaveform*       wf;
+  AudioSynthWaveform*       wf2;
   AudioFilterStateVariable* filt;
   AudioMixer4*              mix;
   AudioEffectEnvelope*      env;
+  AudioEffectEnvelope*      env2;
   int8_t  note;
   uint8_t velocity;
 };
@@ -59,16 +73,34 @@ struct Oscillator {
 
 #define NVOICES 8
 Oscillator oscs[NVOICES] = {
-  { &waveform1, &filter1, &mixer1, &envelope1, -1, 0 },
-  { &waveform2, &filter2, &mixer2, &envelope2, -1, 0 },
-  { &waveform3, &filter3, &mixer3, &envelope3, -1, 0 },
-  { &waveform4, &filter4, &mixer4, &envelope4, -1, 0 },
-  { &waveform5, &filter5, &mixer5, &envelope5, -1, 0 },
-  { &waveform6, &filter6, &mixer6, &envelope6, -1, 0 },
-  { &waveform7, &filter7, &mixer7, &envelope7, -1, 0 },
-  { &waveform8, &filter8, &mixer8, &envelope8, -1, 0 },
+  { &waveform1, &waveform9, &filter1, &mixer1, &envelope1,  &filt_env_1, -1, 0 },
+  { &waveform2, &waveform10, &filter2, &mixer2, &envelope2, &filt_env_2, -1, 0 },
+  { &waveform3, &waveform11, &filter3, &mixer3, &envelope3, &filt_env_3, -1, 0 },
+  { &waveform4, &waveform12, &filter4, &mixer4, &envelope4, &filt_env_4, -1, 0 },
+  { &waveform5, &waveform13, &filter5, &mixer5, &envelope5, &filt_env_5, -1, 0 },
+  { &waveform6, &waveform14, &filter6, &mixer6, &envelope6, &filt_env_6, -1, 0 },
+  { &waveform7, &waveform15, &filter7, &mixer7, &envelope7, &filt_env_7, -1, 0 },
+  { &waveform8, &waveform16, &filter8, &mixer8, &envelope8, &filt_env_8, -1, 0 },
 };
 
+#ifdef USE_BANDLIMIT_WAVEFORMS
+#define NPROGS 13
+uint16_t progs[NPROGS] = {
+	WAVEFORM_SINE,
+	WAVEFORM_SAWTOOTH,
+	WAVEFORM_SQUARE,
+	WAVEFORM_TRIANGLE,
+	WAVEFORM_ARBITRARY,
+	WAVEFORM_PULSE,
+	WAVEFORM_SAWTOOTH_REVERSE,
+	WAVEFORM_SAMPLE_HOLD,
+	WAVEFORM_TRIANGLE_VARIABLE,
+	WAVEFORM_BANDLIMIT_SAWTOOTH,
+	WAVEFORM_BANDLIMIT_SAWTOOTH_REVERSE,
+	WAVEFORM_BANDLIMIT_SQUARE,
+	WAVEFORM_BANDLIMIT_PULSE,
+};
+#else
 #define NPROGS 8
 uint8_t progs[NPROGS] = {
   WAVEFORM_SINE,
@@ -80,6 +112,7 @@ uint8_t progs[NPROGS] = {
   WAVEFORM_SAMPLE_HOLD,
   WAVEFORM_ARBITRARY,
 };
+#endif
 
 enum FilterMode_t {
   LOWPASS,
@@ -92,12 +125,20 @@ enum FilterMode_t {
 //////////////////////////////////////////////////////////////////////
 // Global variables
 //////////////////////////////////////////////////////////////////////
-float   masterVolume   = 0.3;
+float   masterVolume   = 0.8;
+#ifdef USE_BANDLIMIT_WAVEFORMS
+uint16_t currentProgram = WAVEFORM_BANDLIMIT_SAWTOOTH;
+# else
 uint8_t currentProgram = WAVEFORM_SAWTOOTH;
+#endif
 
 bool  polyOn;
 bool  omniOn;
 bool  velocityOn;
+
+float layerWidth;
+float layerMix1;
+float layerMix2;
 
 bool  sustainPressed;
 float channelVolume;
@@ -106,21 +147,32 @@ float pulseWidth; // 0.05-0.95
 float pitchBend;  // -1/+1 oct
 float pitchScale;
 int   octCorr;
+int		transpose;
 
 // filter
 FilterMode_t filterMode;
 float filtFreq; // 20-AUDIO_SAMPLE_RATE_EXACT/2.5
 float filtReso; // 0.9-5.0
 float filtAtt;  // 0-1
+float filtOct;  // 0-7
 
 // envelope
 bool  envOn;
-float envDelay;   // 0-200
-float envAttack;  // 0-200
-float envHold;    // 0-200
-float envDecay;   // 0-200
+float envDelay;   // 0-11880
+float envAttack;  // 0-11880
+float envHold;    // 0-11880
+float envDecay;   // 0-11880
 float envSustain; // 0-1
-float envRelease; // 0-200
+float envRelease; // 0-11880
+
+// envelope2
+bool  env2On;
+float env2Delay;   // 0-11880
+float env2Attack;  // 0-11880
+float env2Hold;    // 0-11880
+float env2Decay;   // 0-11880
+float env2Sustain; // 0-1
+float env2Release; // 0-11880
 
 // FX
 bool  flangerOn;
@@ -131,28 +183,35 @@ float flangerFreqFine;
 
 // portamento
 bool     portamentoOn;
-uint16_t portamentoTime;
+uint32_t portamentoTime;
 int8_t   portamentoDir;
 float    portamentoStep;
 float    portamentoPos;
+
+// latching values
+int lastProgCC=0;
 
 //////////////////////////////////////////////////////////////////////
 // Handling of sounding and pressed notes
 //////////////////////////////////////////////////////////////////////
 int8_t notesOn[NVOICES]      = { -1, -1, -1, -1, -1, -1, -1, -1, };
 int8_t notesPressed[NVOICES] = { -1, -1, -1, -1, -1, -1, -1, -1, };
+int8_t lastVelocity; // used for retrigger in mono mode of previously-held keys
 
 inline void notesReset(int8_t* notes) {
   memset(notes,-1,NVOICES*sizeof(int8_t));
 }
 
-inline void notesAdd(int8_t* notes, uint8_t note) {
+inline void notesAdd(int8_t* notes, uint8_t note, uint8_t velocity) {
   int8_t *end=notes+NVOICES;
+	int8_t noteNumber=0;
   do {
     if(*notes == -1) {
       *notes = note;
+			lastVelocity=velocity;
       break;
     }
+		noteNumber++;
   } while (++notes < end);
 }
 
@@ -194,6 +253,7 @@ inline void updateFilterMode() {
 inline void updateFilter() {
   Oscillator *o=oscs,*end=oscs+NVOICES;
   do {
+    o->filt->octaveControl(filtOct);
     o->filt->frequency(filtFreq);
     o->filt->resonance(filtReso);
   } while (++o < end);
@@ -208,6 +268,18 @@ inline void updateEnvelope() {
     o->env->decay(envDecay);
     o->env->sustain(envSustain);
     o->env->release(envRelease);
+  } while (++o < end);
+}
+
+inline void updateEnvelope2() {
+  Oscillator *o=oscs,*end=oscs+NVOICES;
+  do {
+    o->env2->delay(env2Delay);
+    o->env2->attack(env2Attack);
+    o->env2->hold(env2Hold);
+    o->env2->decay(env2Decay);
+    o->env2->sustain(env2Sustain);
+    o->env2->release(env2Release);
   } while (++o < end);
 }
 
@@ -234,14 +306,6 @@ void updateFlanger() {
     flangerL.voices(flangerOffset,flangerDepth,flangerFreqCoarse+flangerFreqFine);
     flangerR.voices(flangerOffset,flangerDepth,flangerFreqCoarse+flangerFreqFine);
     AudioInterrupts();
-#if SYNTH_DEBUG > 0
-    SYNTH_SERIAL.print("Flanger: offset=");
-    SYNTH_SERIAL.print(flangerOffset);
-    SYNTH_SERIAL.print(", depth=");
-    SYNTH_SERIAL.print(flangerDepth);
-    SYNTH_SERIAL.print(", freq=");
-    SYNTH_SERIAL.println(flangerFreqCoarse+flangerFreqFine);    
-#endif
   } else {
     flangerL.voices(FLANGE_DELAY_PASSTHRU,0,0);
     flangerR.voices(FLANGE_DELAY_PASSTHRU,0,0);        
@@ -250,10 +314,14 @@ void updateFlanger() {
 
 void resetAll() {
   polyOn     = true;
-  omniOn     = false;
+  omniOn     = true;
   velocityOn = true;
+
+	layerWidth = 1./127.;
+	layerMix1	 = 1.;
+	layerMix2	 = 1.;
   
-  filterMode     = FILTEROFF;
+  filterMode     = LOWPASS;
   sustainPressed = false;
   channelVolume  = 1.0;
   panorama       = 0.5;
@@ -261,20 +329,41 @@ void resetAll() {
   pitchBend      = 0;
   pitchScale     = 1;
   octCorr        = currentProgram == WAVEFORM_PULSE ? 1 : 0;
-  
+	transpose			 = 0; 
+
   // filter
-  filtFreq = 15000.;
-  filtReso = 0.9;
+  filtFreq = 17000.;
+  filtReso = 1.11;
   filtAtt  = 1.;
+  filtOct  = 2.5;
 
   // envelope
-  envOn      = false;
+  envOn      = true;
   envDelay   = 0;
-  envAttack  = 20;
+  envAttack  = 0;
   envHold    = 0;
   envDecay   = 0;
   envSustain = 1;
-  envRelease = 20;
+  envRelease = 0;
+
+	// dc, used for filter envelope
+	dc1.amplitude(1);
+	dc2.amplitude(1);
+	dc3.amplitude(1);
+	dc4.amplitude(1);
+	dc5.amplitude(1);
+	dc6.amplitude(1);
+	dc7.amplitude(1);
+	dc8.amplitude(1);
+
+  // filter envelope 
+  env2On      = true;
+  env2Delay   = 0;
+  env2Attack  = 0;
+  env2Hold    = 0;
+  env2Decay   = 0;
+  env2Sustain = 1;
+  env2Release = 0;
 
   // FX
   flangerOn         = false;
@@ -293,6 +382,7 @@ void resetAll() {
   updatePolyMode();
   updateFilterMode();
   updateEnvelope();
+  updateEnvelope2();
   updatePan();
 }
 
@@ -302,25 +392,42 @@ inline void updateProgram() {
     
   Oscillator *o=oscs,*end=oscs+NVOICES;
   do {
-    if (currentProgram==WAVEFORM_PULSE) o->wf->pulseWidth(pulseWidth);
+    if (currentProgram==WAVEFORM_PULSE || currentProgram==WAVEFORM_BANDLIMIT_PULSE){
+			o->wf->pulseWidth(pulseWidth);
+			o->wf2->pulseWidth(pulseWidth);
+		}
     o->wf->begin(progs[currentProgram]);
+		o->wf2->begin(progs[currentProgram]);
   } while(++o < end);
 }
 
 inline void updatePulseWidth() {
-  if (currentProgram!=WAVEFORM_PULSE) return;
-  Oscillator *o=oscs,*end=oscs+NVOICES;
-  do {
-    if (o->note < 0) continue;
-    o->wf->pulseWidth(pulseWidth);
-  } while(++o < end);
+	if (currentProgram==WAVEFORM_PULSE || currentProgram==WAVEFORM_BANDLIMIT_PULSE) {
+		Oscillator *o=oscs,*end=oscs+NVOICES;
+		do {
+			if (o->note < 0) continue;
+			o->wf->pulseWidth(pulseWidth);
+			o->wf2->pulseWidth(pulseWidth);
+		} while(++o < end);
+	}
+	return;
 }
 
 inline void updatePitch() {
   Oscillator *o=oscs,*end=oscs+NVOICES;
   do {
     if (o->note < 0) continue;
-    o->wf->frequency(noteToFreq(o->note));
+    o->wf->frequency(noteToFreq(o->note, false));
+		o->wf2->frequency(noteToFreq(o->note, true));
+  } while(++o < end);
+}
+
+inline void updateLayer() {
+  Oscillator *o=oscs,*end=oscs+NVOICES;
+  do {
+    if (o->note < 0) continue;
+    o->wf->frequency(noteToFreq(o->note, false));
+		o->wf2->frequency(noteToFreq(o->note, true));
   } while(++o < end);
 }
 
@@ -330,7 +437,8 @@ inline void updateVolume() {
   do {
     if (o->note < 0) continue;
     velocity = velocityOn ? o->velocity/127. : 1;
-    o->wf->amplitude(velocity*channelVolume*GAIN_OSC);
+    o->wf->amplitude(velocity*channelVolume*GAIN_OSC*layerMix1);
+    o->wf2->amplitude(velocity*channelVolume*GAIN_OSC*layerMix2);
   } while(++o < end);
 }
 
@@ -365,8 +473,7 @@ inline void updatePolyMode() {
   updatePan();
 }
 
-inline void updatePortamento()
-{
+inline void updatePortamento() {
   if (portamentoDir == 0) return;
   if (oscs->note < 0) {
     portamentoDir = 0;
@@ -378,44 +485,60 @@ inline void updatePortamento()
       portamentoPos = oscs->note;
       portamentoDir = 0;
     }
-  }
-  else {
+  } else {
     portamentoPos += portamentoStep;
     if (portamentoPos > oscs->note) {
       portamentoPos = oscs->note;
       portamentoDir = 0;
     }
   }
-  oscs->wf->frequency(noteToFreq(portamentoPos));
+  oscs->wf->frequency(noteToFreq(portamentoPos, false));
+	oscs->wf2->frequency(noteToFreq(portamentoPos, true));
 }
 
 //////////////////////////////////////////////////////////////////////
 // Oscillator control functions
 //////////////////////////////////////////////////////////////////////
-inline float noteToFreq(float note) {
+inline float noteToFreq(float note, bool useLayer) {
+	note=note+transpose;
   // Sets all notes as an offset of A4 (#69)
   if (portamentoOn) note = portamentoPos;
-  return SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale+octCorr);
+	float thisFreq=SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale+octCorr);
+	if (useLayer==true){
+		thisFreq=thisFreq*(1+layerWidth);
+	} else {
+		thisFreq=SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale+octCorr);
+	}
+  return thisFreq;
 }
 
 inline void oscOn(Oscillator& osc, int8_t note, uint8_t velocity) {
   float v = velocityOn ? velocity/127. : 1;
   if (osc.note!=note) {
-    osc.wf->frequency(noteToFreq(note));
-    notesAdd(notesOn,note);
+    osc.wf->frequency(noteToFreq(note, false));
+		osc.wf2->frequency(noteToFreq(note, true));
+    notesAdd(notesOn,note,velocity);
     if (envOn && !osc.velocity) osc.env->noteOn();
-    osc.wf->amplitude(v*channelVolume*GAIN_OSC);
+    if (env2On) osc.env2->noteOn();
+    osc.wf->amplitude(v*channelVolume*GAIN_OSC*layerMix1);
+		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*layerMix2);
     osc.velocity = velocity;
     osc.note = note;
   } else if (velocity > osc.velocity) {
-    osc.wf->amplitude(v*channelVolume*GAIN_OSC);
+    osc.wf->amplitude(v*channelVolume*GAIN_OSC*layerMix1);
+		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*layerMix2);
     osc.velocity = velocity;
   }
 }
 
 inline void oscOff(Oscillator& osc) {
-  if (envOn) osc.env->noteOff();
-  else       osc.wf->amplitude(0);
+  if (envOn) {
+		osc.env->noteOff();
+	} else {
+		osc.wf->amplitude(0);
+		osc.wf2->amplitude(0);
+	}
+  if (env2On) osc.env2->noteOff();
   notesDel(notesOn,osc.note);
   osc.note = -1;
   osc.velocity = 0;
@@ -426,7 +549,9 @@ inline void allOff() {
   do {
     oscOff(*o);
     o->wf->amplitude(0);
+    o->wf2->amplitude(0);
     o->env->noteOff();
+    o->env2->noteOff();
   } while(++o < end);
   notesReset(notesOn);
 }
@@ -441,7 +566,7 @@ void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
   SYNTH_SERIAL.println("NoteOn");
 #endif
 
-  notesAdd(notesPressed,note);
+  notesAdd(notesPressed,note,velocity);
 
   Oscillator *o=oscs;
   if (portamentoOn) {
@@ -454,8 +579,7 @@ void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
     }
     *notesOn = -1;
     oscOn(*o, note, velocity);
-  }
-  else if (polyOn) {
+  } else if (polyOn) {
     Oscillator *curOsc=0, *end=oscs+NVOICES;
     if (sustainPressed && notesFind(notesOn,note)) {
       do {
@@ -479,9 +603,7 @@ void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
     }
     if (!curOsc) return;
     oscOn(*curOsc, note, velocity);
-  }
-  else 
-  {
+  } else {
     *notesOn = -1;
     oscOn(*o, note, velocity);
   }
@@ -492,10 +614,15 @@ void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
 Oscillator* OnNoteOffReal(uint8_t channel, uint8_t note, uint8_t velocity, bool ignoreSustain) {
   if (!omniOn && channel != SYNTH_MIDICHANNEL) return 0;
 
-#if 0 //#ifdef SYNTH_DEBUG
+#if SYNTH_DEBUG>1
   SYNTH_SERIAL.println("NoteOff");
 #endif
   int8_t lastNote = notesDel(notesPressed,note);
+
+	// note off velocity is used later in mono mode to retrigger a still-held note. the velocity of the
+	// last note played seems appropriate for the velocity of that retrigger, rather than whatever velocity
+	// it was originally played with. that way crescendo and decrescendo can be done with trills
+	velocity=lastVelocity;
   
   if (sustainPressed && !ignoreSustain) return 0;
 
@@ -571,18 +698,182 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
   switch (control) {
   case 0: // bank select, do nothing (switch sounds via program change only)
     break;
-  case 5: // portamento time
+  case 13: // portamento time
   {
     float portamentoRange = portamentoStep*portamentoTime;
-    portamentoTime = value*50;
+    portamentoTime = value*value*value;
     portamentoStep = portamentoRange/portamentoTime;
     break;
   }
-  case 7: // volume
+  case 14: // volume
     channelVolume = value/127.;
     updateVolume();
     break;
-  case 9: // fix volume
+  case 2: // attack
+    envAttack = value*11880./127.;
+    updateEnvelope();
+    break;
+  case 3: // decay
+    envDecay = value*11880./127.;
+    updateEnvelope();
+    break;
+  case 4: // sustain
+    envSustain = value/127.;
+    updateEnvelope();
+    break;
+  case 5: // release
+    envRelease = value*11880./127.;
+    updateEnvelope();
+    break;
+  case 6: // attack
+    env2Attack = value*5000./127.;
+    updateEnvelope2();
+    break;
+  case 8: // decay
+    env2Decay = value*5000./127.;
+    updateEnvelope2();
+    break;
+  case 9: // sustain
+    env2Sustain = value/127.;
+    updateEnvelope2();
+    break;
+  case 12: // release
+    env2Release = value*5000./127.;
+    updateEnvelope2();
+    break;
+  case 22: // filter frequency
+    //filtFreq = value/2.5*AUDIO_SAMPLE_RATE_EXACT/127.;
+    filtFreq = (1.0*value)/127;
+		filtFreq=pow(filtFreq, 3)*17000;
+    updateFilter();
+    break;
+  case 21: // filter resonance
+    //filtReso = value*4.1/127.+0.9;
+    filtReso = (1.0*value)/127;
+		filtReso=map(filtReso, 0, 1, 1.11, 5.0);
+    updateFilter();
+    break;
+  case 20: // filter octaves
+    filtOct = 7.*value/127.;
+    updateFilter();
+    break;
+  case 18: // layer mix
+		if (value>63) {
+			layerMix1 = map((1.0*value), 64., 127., 1., 0.);
+			layerMix2 = 1.;
+		} else {
+			layerMix1 = 1.;
+			layerMix2 = map((1.0*value), 63., 0., 1., 0.);
+		}
+    updateVolume();
+    break;
+  case 19: // filter mode
+    if (value < FILTERMODE_N) {
+      filterMode = FilterMode_t(value);
+    } else {
+      filterMode = FilterMode_t((filterMode+1)%FILTERMODE_N);
+    }
+    updateFilterMode();
+    break;
+	case 23: // poly mode
+		switch (value){
+			case 127:
+				// turn on poly mode
+				polyOn=true;
+				portamentoOn=false;
+    		updatePolyMode();
+				break;
+		}
+		break;
+	case 33: // mono mode
+		switch (value){
+			case 127:
+				// turn off poly mode
+				polyOn=false;
+				portamentoOn=true;
+    		updatePolyMode();
+				break;
+		}
+		break;
+  case 16: // layer width
+    layerWidth = ((1+value)/127.);
+  	updateLayer();
+    break;
+  case 17: // pulse width
+    pulseWidth = (value/127.)*0.9+0.05;
+    updatePulseWidth();
+    break;
+	case 47: // program change down
+		if (value>=127 && lastProgCC != value){
+  		if (value>0) {
+				currentProgram--;
+				updateProgram();
+			}
+		}
+		lastProgCC=value;
+		break;
+	case 48: // program change up
+		if (value>=127 && lastProgCC != value){
+  		if (currentProgram<NPROGS) {
+				currentProgram++;
+				updateProgram();
+			}
+		}
+		lastProgCC=value;
+		break;
+  case 64: // sustain/damper pedal
+    if (value > 63) sustainPressed = true;
+    else {
+      sustainPressed = false;
+      Oscillator *o=oscs, *end=oscs+NVOICES;
+      do {
+        if (o->note != -1 && !notesFind(notesPressed,o->note)) oscOff(*o);
+      } while (++o < end);
+    }
+    break;
+  case 31: // portamento on
+    if (polyOn) break;
+    if (value > 63) {
+      portamentoOn = true;
+      if (oscs->note != -1) portamentoPos = oscs->note;
+    }
+    break;
+	case 41: // portamento off
+    if (polyOn) break;
+    if (value > 126) {
+    	portamentoOn = false;
+		}
+    break;
+  case 25: // transpose
+		if (value>=127){	
+			transpose++;
+		}
+    break;
+  case 35: // transpose
+		if (value>=127){	
+			transpose--;
+		}
+    break;
+	/*
+  case x: // controller reset
+    resetAll();
+    break;
+  case x: // all notes off
+    allOff();
+    break;
+  case x: // omni off
+    allOff();
+    omniOn = false;
+    break;
+  case x: // omni on
+    allOff();
+    omniOn = true;
+    break;
+  case x: // filter attenuation
+    filtAtt = value/127.;
+    updateFilterMode();
+    break;
+  case x: // fix volume
     switch (value) {
     case 0:
       velocityOn = false;
@@ -595,158 +886,43 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
       break;
     }
     break;
-  case 10: // pan
+  case x: // pan
     panorama = value/127.;
     updatePan();
     break;
-  case 12: // attack
-    envAttack = value*200./127.;
-    updateEnvelope();
-    break;
-  case 13: // release
-    envRelease = value*200./127.;
-    updateEnvelope();
-    break;
-  case 14: // filter frequency
-    filtFreq = value/2.5*AUDIO_SAMPLE_RATE_EXACT/127.;
-    updateFilter();
-    break;
-  case 15: // filter resonance
-    filtReso = value*4.1/127.+0.9;
-    updateFilter();
-    break;
-  case 16: // filter attenuation
-    filtAtt = value/127.;
-    updateFilterMode();
-    break;
-  case 17: // filter mode
-    if (value < FILTERMODE_N) {
-      filterMode = FilterMode_t(value);
-    } else {
-      filterMode = FilterMode_t((filterMode+1)%FILTERMODE_N);
-    }
-    updateFilterMode();
-    break;
-  case 18: // poly mode
-    switch (value) {
-    case 0:
-      polyOn = true;
-      portamentoOn = false;
-      break;
-    case 1:
-      polyOn = false;
-      portamentoOn = false;
-      break;
-    case 2:
-      polyOn = false;
-      portamentoOn = true;
-      break;
-    default: // cycle POLY, MONO, PORTAMENTO
-    {
-      bool tmp = polyOn;
-      polyOn = portamentoOn;
-      portamentoOn = !(tmp || portamentoOn);
-      break;
-    }
-    }
-    updatePolyMode();
-    break;
-  case 19: // envelope mode
+  case x: // envelope mode
     allOff();
     envOn = !envOn;
     updateEnvelopeMode();
     break;
-  case 20: // delay
-    envDelay = value*200./127.;
-    updateEnvelope();
-    break;
-  case 21: // hold
-    envHold = value*200./127.;
-    updateEnvelope();
-    break;
-  case 22: // decay
-    envDecay = value*200./127.;
-    updateEnvelope();
-    break;
-  case 23: // sustain
-    envSustain = value/127.;
-    updateEnvelope();
-    break;
-  case 24: // pulse width
-    pulseWidth = (value/127.)*0.9+0.05;
-    updatePulseWidth();
-    break;
-  case 25: // flanger toggle
+  case x: // flanger toggle
     if (value < 2)
         flangerOn = bool(value);
     else
         flangerOn = !flangerOn;
     updateFlanger();
     break;
-  case 26: // flanger offset
+  case x: // flanger offset
     flangerOffset = int(value/127.*8)*DELAY_LENGTH/8;
     updateFlanger();
     break;
-  case 27: // flanger depth
+  case x: // flanger depth
     flangerDepth = int(value/127.*8)*DELAY_LENGTH/8;
     updateFlanger();
     break;
-  case 28: // flanger coarse frequency
+  case x: // flanger coarse frequency
+    break;
     flangerFreqCoarse = value/127.*10.;
     updateFlanger();
     break;
-  case 29: // flanger fine frequency
+  case x: // flanger fine frequency
     flangerFreqFine = value/127.;
     updateFlanger();
     break;
-  case 30: // pitch range in semitones
+  case x: // pitch range in semitones
     pitchScale = 12./value;
     break;
-  case 64: // sustain/damper pedal
-    if (value > 63) sustainPressed = true;
-    else {
-      sustainPressed = false;
-      Oscillator *o=oscs, *end=oscs+NVOICES;
-      do {
-        if (o->note != -1 && !notesFind(notesPressed,o->note)) oscOff(*o);
-      } while (++o < end);
-    }
-    break;
-  case 65: // portamento on/off
-    if (polyOn) break;
-    if (value > 63) {
-      portamentoOn = true;
-      if (oscs->note != -1) portamentoPos = oscs->note;
-    }
-    else portamentoOn = false;
-    break;
-  case 84: // portamento control (start note)
-    portamentoPos = value;
-    break;
-  case 121: // controller reset
-    resetAll();
-    break;
-  case 123: // all notes off
-    allOff();
-    break;
-  case 124: // omni off
-    allOff();
-    omniOn = false;
-    break;
-  case 125: // omni on
-    allOff();
-    omniOn = true;
-    break;
-  case 126: // mono
-    polyOn = false;
-    portamentoOn = false;
-    updatePolyMode();
-    break;
-  case 127: // poly
-    polyOn = true;
-    portamentoOn = false;
-    updatePolyMode();
-    break;
+	*/
   default:
 #if SYNTH_DEBUG > 0
     SYNTH_SERIAL.print("Unhandled Control Change: channel ");
@@ -758,7 +934,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 #endif
     break;
   }    
-#if 1 //0
+#if SYNTH_DEBUG > 0
   SYNTH_SERIAL.print("Control Change: channel ");
   SYNTH_SERIAL.print(channel);
   SYNTH_SERIAL.print(", control ");
@@ -835,6 +1011,7 @@ void OnRealTimeSystem(uint8_t realtimebyte) {
 #endif
 }
 
+/*
 void OnTimeCodeQFrame(uint16_t data)
 {
 #if SYNTH_DEBUG > 0
@@ -842,6 +1019,7 @@ void OnTimeCodeQFrame(uint16_t data)
   SYNTH_SERIAL.println(data);
 #endif
 }
+*/
         
 //////////////////////////////////////////////////////////////////////
 // Debugging functions
@@ -944,6 +1122,21 @@ void printInfo() {
   SYNTH_SERIAL.print("Envelope Release:     ");
   SYNTH_SERIAL.println(envRelease);
   SYNTH_SERIAL.println();
+  SYNTH_SERIAL.print("Envelope2 On:          ");
+  SYNTH_SERIAL.println(env2On);
+  SYNTH_SERIAL.print("Envelope2 Delay:       ");
+  SYNTH_SERIAL.println(env2Delay);
+  SYNTH_SERIAL.print("Envelope2 Attack:      ");
+  SYNTH_SERIAL.println(env2Attack);
+  SYNTH_SERIAL.print("Envelope2 Hold:        ");
+  SYNTH_SERIAL.println(env2Hold);
+  SYNTH_SERIAL.print("Envelope2 Decay:       ");
+  SYNTH_SERIAL.println(env2Decay);
+  SYNTH_SERIAL.print("Envelope2 Sustain:     ");
+  SYNTH_SERIAL.println(env2Sustain);
+  SYNTH_SERIAL.print("Envelope2 Release:     ");
+  SYNTH_SERIAL.println(env2Release);
+  SYNTH_SERIAL.println();
   SYNTH_SERIAL.print("Flanger On:           ");
   SYNTH_SERIAL.println(flangerOn);
   SYNTH_SERIAL.print("Flanger Offset:       ");
@@ -1013,8 +1206,6 @@ void selectCommand(char c) {
 
 #endif
 
-#include "saw.h"
-
 //////////////////////////////////////////////////////////////////////
 // setup() and loop()
 //////////////////////////////////////////////////////////////////////
@@ -1025,15 +1216,9 @@ void setup() {
   
   AudioMemory(AMEMORY);
   sgtl5000_1.enable();
+  sgtl5000_1.unmuteHeadphone();
   sgtl5000_1.volume(masterVolume);
 
-  {
-    Oscillator *o=oscs,*end=oscs+NVOICES;
-    do {
-      o->wf->arbitraryWaveform(reinterpret_cast<const int16_t*>(saw),0);
-    } while(++o < end);
-  }
-  
   resetAll();
   updateProgram();
   
@@ -1041,18 +1226,47 @@ void setup() {
   flangerR.begin(delaylineR,DELAY_LENGTH,FLANGE_DELAY_PASSTHRU,0,0);
   updateFlanger();
 
+	mixer9.gain(0, 1);
+	mixer10.gain(0, 1);
+	mixer11.gain(0, 1);
+	mixer12.gain(0, 1);
+	mixer13.gain(0, 1);
+	mixer14.gain(0, 1);
+	mixer15.gain(0, 1);
+	mixer16.gain(0, 1);
+
+	mixer9.gain(1, 1);
+	mixer10.gain(1, 1);
+	mixer11.gain(1, 1);
+	mixer12.gain(1, 1);
+	mixer13.gain(1, 1);
+	mixer14.gain(1, 1);
+	mixer15.gain(1, 1);
+	mixer16.gain(1, 1);
+
 #ifdef USB_MIDI
   // see arduino/hardware/teensy/avr/libraries/USBHost_t36/USBHost_t36.h
-  usbMIDI.setHandleNoteOff(OnNoteOff);
-  usbMIDI.setHandleNoteOn(OnNoteOn);
-  usbMIDI.setHandleVelocityChange(OnAfterTouchPoly);
-  usbMIDI.setHandleControlChange(OnControlChange);
-  usbMIDI.setHandlePitchChange(OnPitchChange);
-  usbMIDI.setHandleProgramChange(OnProgramChange);
-  usbMIDI.setHandleAfterTouch(OnAfterTouch);
-  usbMIDI.setHandleSysEx(OnSysEx);
-  //usbMIDI.setHandleRealTimeSystem(OnRealTimeSystem);
-  usbMIDI.setHandleTimeCodeQuarterFrame(OnTimeCodeQFrame);
+	myusb.begin();
+  usbMIDI1.setHandleNoteOff(OnNoteOff);
+  usbMIDI1.setHandleNoteOn(OnNoteOn);
+  usbMIDI1.setHandleVelocityChange(OnAfterTouchPoly);
+  usbMIDI1.setHandleControlChange(OnControlChange);
+  usbMIDI1.setHandlePitchChange(OnPitchChange);
+  usbMIDI1.setHandleProgramChange(OnProgramChange);
+  usbMIDI1.setHandleAfterTouch(OnAfterTouch);
+  usbMIDI1.setHandleSysEx(OnSysEx);
+  //usbMIDI1.setHandleRealTimeSystem(OnRealTimeSystem);
+  //usbMIDI1.setHandleTimeCodeQuarterFrame(OnTimeCodeQFrame);
+  usbMIDI2.setHandleNoteOff(OnNoteOff);
+  usbMIDI2.setHandleNoteOn(OnNoteOn);
+  usbMIDI2.setHandleVelocityChange(OnAfterTouchPoly);
+  usbMIDI2.setHandleControlChange(OnControlChange);
+  usbMIDI2.setHandlePitchChange(OnPitchChange);
+  usbMIDI2.setHandleProgramChange(OnProgramChange);
+  usbMIDI2.setHandleAfterTouch(OnAfterTouch);
+  usbMIDI2.setHandleSysEx(OnSysEx);
+  //usbMIDI2.setHandleRealTimeSystem(OnRealTimeSystem);
+  //usbMIDI2.setHandleTimeCodeQuarterFrame(OnTimeCodeQFrame);
 #else
   // see arduino/hardware/teensy/avr/libraries/MIDI/src/MIDI.h
   MIDI.begin();
@@ -1084,11 +1298,13 @@ void setup() {
 
 void loop() {
 #ifdef USB_MIDI
-  usbMIDI.read();
+  usbMIDI1.read();
+  usbMIDI2.read();
 #else
   MIDI.read();
 #endif
-  updateMasterVolume();
+	// ns - no pot, so disable this for now
+	//updateMasterVolume();
   updatePortamento();
 
 #if SYNTH_DEBUG > 0
