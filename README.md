@@ -1,29 +1,12 @@
-## TeensySynth - a polyphonic MIDI synthesizer for Teensy 3.x
+## TeensySynth - a polyphonic MIDI synthesizer for Teensy 4.x
 
-### Features
-* 8-voice polyphony
-* 7 waveforms: sine, square, triangle, sawtooth, reverse sawtooth, pulse, sample & hold
-* filter and amplitube envelope per voice
-* MONO and POLY mode
-* Portamento
-* MIDI via USB or serial pins
+Forked from https://github.com/jmechnich/TeensySynth
 
-### Supported MIDI controls
-* Channel volume
-* Channel pan
-* Sustain pedal
-* Envelope controls
-* Filter controls
-* Effect controls
-* Portamento controls
-
-For details refer to [controls.txt](https://raw.githubusercontent.com/jmechnich/TeensySynth/master/controls.txt).
-
-### Wishlist
- * Arpeggiator
- * Filter LFO/envelope
- * Modulation
- * improve filter / implement proper gain attenuation
+### Changes from original fork
+* added second per-voice oscillator
+* added bandlimit waveforms to eliminate aliasing
+* added filter envelope
+* modified as needed to support teensy 4.1 and multiple MIDI input devices
 
 ### Useful links
 * [Teensy Audio Library](http://www.pjrc.com/teensy/td_libs_Audio.html)
