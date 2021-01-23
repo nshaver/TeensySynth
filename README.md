@@ -8,7 +8,7 @@ Forked from https://github.com/jmechnich/TeensySynth
 * added filter envelope
 * LFO
 * sample and hold
-* modified as needed to support teensy 4.1 and multiple MIDI input devices
+* modified as needed to support teensy 4.1 and multiple MIDI input devices. allows a keyboard to control notes and a separate control surface to control synth parameters
 
 ### Useful links
 * [Teensy Audio Library](http://www.pjrc.com/teensy/td_libs_Audio.html)
