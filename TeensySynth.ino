@@ -84,8 +84,8 @@ Oscillator oscs[NVOICES] = {
 };
 
 #ifdef USE_BANDLIMIT_WAVEFORMS
-#define NPROGS 13
-uint16_t progs[NPROGS] = {
+#define COUNT_OF_WAVEFORMS 13
+uint16_t waveforms[COUNT_OF_WAVEFORMS] = {
 	WAVEFORM_SINE,
 	WAVEFORM_SAWTOOTH,
 	WAVEFORM_SQUARE,
@@ -101,8 +101,8 @@ uint16_t progs[NPROGS] = {
 	WAVEFORM_BANDLIMIT_PULSE,
 };
 #else
-#define NPROGS 8
-uint8_t progs[NPROGS] = {
+#define COUNT_OF_WAVEFORMS 8
+uint8_t waveforms[COUNT_OF_WAVEFORMS] = {
 	WAVEFORM_SINE,
 	WAVEFORM_SQUARE,
 	WAVEFORM_TRIANGLE,
@@ -114,23 +114,28 @@ uint8_t progs[NPROGS] = {
 };
 #endif
 
-enum FilterMode_t {
-	LOWPASS,
-	BANDPASS,
-	HIGHPASS,
-	FILTEROFF,
-	FILTERMODE_N,
+enum FilterModes {
+	FILTERMODE_OFF,
+	FILTERMODE_LOWPASS,
+	FILTERMODE_BANDPASS,
+	FILTERMODE_HIGHPASS,
+	FILTERMODE_COUNT_OF_MODES
 };
+byte FILTERmode=FILTERMODE_LOWPASS;
 
 //////////////////////////////////////////////////////////////////////
 // Global variables
 //////////////////////////////////////////////////////////////////////
 float   masterVolume   = 0.8;
 #ifdef USE_BANDLIMIT_WAVEFORMS
-uint16_t currentProgram = WAVEFORM_BANDLIMIT_SAWTOOTH;
+uint16_t osc1_wf = WAVEFORM_BANDLIMIT_SAWTOOTH;
+uint16_t osc2_wf = WAVEFORM_BANDLIMIT_SAWTOOTH;
 # else
-uint8_t currentProgram = WAVEFORM_SAWTOOTH;
+uint8_t osc1_wf = WAVEFORM_SAWTOOTH;
+uint8_t osc2_wf = WAVEFORM_SAWTOOTH;
 #endif
+
+const float DIV127 = (1.0 / 127.0);
 
 bool  polyOn;
 bool  omniOn;
@@ -149,8 +154,30 @@ float pitchScale;
 int   octCorr;
 int		transpose;
 
+// LFO
+float LFO = 0;
+float LFOnoshape = 0;
+unsigned int LFOspeed = 2000;
+float LFOpitch = 1.;
+float LFOdepth = 0.5;
+float LFOsamplehold = 1.;
+enum LFOmodes {
+	LFO_MODE_OFF,
+	LFO_MODE_UPDOWN,
+	LFO_MODE_UP,
+	LFO_MODE_DOWN,
+	LFO_MODE_SAMPLE_HOLD,
+	LFO_COUNT_OF_MODES
+};
+byte LFOmode = LFO_MODE_OFF;
+enum LFOshapes {
+	LFO_SINE,
+	LFO_SQUARE,
+	LFO_COUNT_OF_SHAPES
+};
+byte LFOshape = LFO_SINE;
+
 // filter
-FilterMode_t filterMode;
 float filtFreq; // 20-AUDIO_SAMPLE_RATE_EXACT/2.5
 float filtReso; // 0.9-5.0
 float filtAtt;  // 0-1
@@ -175,11 +202,13 @@ float env2Sustain; // 0-1
 float env2Release; // 0-11880
 
 // FX
+/*
 bool  flangerOn;
 int   flangerOffset;
 int   flangerDepth;
 float flangerFreqCoarse;
 float flangerFreqFine;
+*/
 
 // portamento
 bool     portamentoOn;
@@ -187,9 +216,6 @@ uint32_t portamentoTime;
 int8_t   portamentoDir;
 float    portamentoStep;
 float    portamentoPos;
-
-// latching values
-int lastProgCC=0;
 
 //////////////////////////////////////////////////////////////////////
 // Handling of sounding and pressed notes
@@ -243,18 +269,20 @@ inline bool notesFind(int8_t* notes, uint8_t note) {
 inline void updateFilterMode() {
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
-		for (uint8_t fm=0; fm<FILTERMODE_N; ++fm) {
-			if (fm == filterMode) o->mix->gain(fm,filtAtt);
+		for (uint8_t fm=0; fm<FILTERMODE_COUNT_OF_MODES; ++fm) {
+			if (fm == FILTERmode) o->mix->gain(fm,filtAtt);
 			else                  o->mix->gain(fm,0);
 		}
 	} while (++o < end);
 }
 
 inline void updateFilter() {
+	float this_filtFreq=filtFreq*LFO*(LFOsamplehold*LFOdepth);
+	if (this_filtFreq>17000) this_filtFreq=17000;
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
 		o->filt->octaveControl(filtOct);
-		o->filt->frequency(filtFreq);
+		o->filt->frequency(this_filtFreq);
 		o->filt->resonance(filtReso);
 	} while (++o < end);
 }
@@ -300,6 +328,116 @@ inline void updateEnvelopeMode() {
 	}
 }
 
+void LFOupdate(bool retrig){
+	if (LFOmode==LFO_MODE_OFF) {
+		LFO=1.;
+		LFOdepth=1.;
+		return;
+	}
+  static unsigned long LFOtime = 0;
+  static bool LFOdirection = false;
+  unsigned long currentMicros = micros();
+  static bool retriggered = false;
+
+  if (retrig == true) {
+		retriggered = true;
+		if (LFOmode==LFO_MODE_UP){
+			// start
+			// UP really means go 0->1, 0->1...
+			LFO=0.;
+			LFOdirection=false;
+		} else {
+			// everything other than UP really means go 1->0->1->0...
+			LFO=1.;
+			LFOdirection=true;
+		}
+		LFOnoshape=LFO;
+	}
+
+  if (currentMicros - LFOtime >= LFOspeed || retrig==true) {
+    LFOtime = currentMicros;
+
+    retriggered = false;
+
+		// generate new random depth for sample&hold
+		bool gen_rand_depth=false;
+
+    // Update LFO
+    if (LFOdirection == false) {
+			// going up
+      LFOnoshape = (LFOnoshape + 0.01);
+      if (LFOnoshape >= 1.) {
+				// top reached
+				if (LFOmode==LFO_MODE_SAMPLE_HOLD){
+					gen_rand_depth=true;
+				}
+				
+				if (LFOmode==LFO_MODE_UP){
+					// UP really means go 0->1, 0->1
+					LFOdirection = false;
+					LFOnoshape=0.;
+				} else {
+					LFOdirection = true;
+					LFOnoshape=1.;
+				}
+      }
+    } else {
+			// going down
+      LFOnoshape = (LFOnoshape - 0.01);
+      if (LFOnoshape <= 0) {
+				// bottom reached
+				if (LFOmode==LFO_MODE_SAMPLE_HOLD){
+					gen_rand_depth=true;
+				}
+				if (LFOmode==LFO_MODE_DOWN){
+        	LFOdirection = true;
+					LFOnoshape=1.;
+				} else {
+        	LFOdirection = false;
+					LFOnoshape=0.;
+				}
+      }
+    }
+
+		if (LFOmode==LFO_MODE_SAMPLE_HOLD){
+			if (gen_rand_depth){
+				// generate a random depth for sample&hold
+				long randDepth=random(127);
+				LFOsamplehold = (1. * randDepth)/127.;
+			}
+		} else {
+			LFOsamplehold = 1.;
+		}
+
+		if (LFOshape==LFO_SQUARE || LFOmode==LFO_MODE_SAMPLE_HOLD){
+			// always use square when going to sample&hold
+			if (LFOmode==LFO_MODE_SAMPLE_HOLD){
+				// always keep LFO on for sample&hold, the LFOsamplehold will be what changes
+				LFO=1.;
+			} else {
+				if (LFOnoshape>=0.5){
+					LFO=1.;
+				} else {
+					LFO=0.;
+				}
+			}
+		} else {
+			LFO=LFOnoshape;
+		}
+
+#if SYNTH_DEBUG > 3
+		SYNTH_SERIAL.print("LFO=");
+		SYNTH_SERIAL.print(LFO);
+		SYNTH_SERIAL.print("  LFOSPD=");
+		SYNTH_SERIAL.print(LFOspeed);
+		SYNTH_SERIAL.print("  depth=");
+		SYNTH_SERIAL.println(LFOdepth);
+#endif
+		updateFilter();
+  }
+}
+
+/*
 void updateFlanger() {
 	if (flangerOn) {
 		AudioNoInterrupts();
@@ -311,6 +449,7 @@ void updateFlanger() {
 		flangerR.voices(FLANGE_DELAY_PASSTHRU,0,0);        
 	}
 }
+*/
 
 void resetAll() {
 	polyOn     = true;
@@ -321,14 +460,14 @@ void resetAll() {
 	layerMix1	 = 1.;
 	layerMix2	 = 1.;
 
-	filterMode     = LOWPASS;
+	FILTERmode	 	 = FILTERMODE_LOWPASS;
 	sustainPressed = false;
 	channelVolume  = 1.0;
 	panorama       = 0.5;
 	pulseWidth     = 0.5;
 	pitchBend      = 0;
 	pitchScale     = 1;
-	octCorr        = currentProgram == WAVEFORM_PULSE ? 1 : 0;
+	octCorr        = osc1_wf == WAVEFORM_PULSE ? 1 : 0;
 	transpose			 = 0; 
 
 	// filter
@@ -365,12 +504,14 @@ void resetAll() {
 	env2Sustain = 1;
 	env2Release = 0;
 
+	/*
 	// FX
 	flangerOn         = false;
 	flangerOffset     = DELAY_LENGTH/4;
 	flangerDepth      = DELAY_LENGTH/16;
 	flangerFreqCoarse = 0;
 	flangerFreqFine   = .5;
+	*/
 
 	// portamento
 	portamentoOn   = false;
@@ -386,27 +527,35 @@ void resetAll() {
 	updatePan();
 }
 
-inline void updateProgram() {
-	if (currentProgram==WAVEFORM_PULSE) octCorr = 1;
+inline void updateWaveform() {
+	if (osc1_wf==WAVEFORM_PULSE) octCorr = 1;
 	else octCorr = 0;
 		
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
-		if (currentProgram==WAVEFORM_PULSE || currentProgram==WAVEFORM_BANDLIMIT_PULSE){
+		if (osc1_wf==WAVEFORM_PULSE || osc1_wf==WAVEFORM_BANDLIMIT_PULSE){
 			o->wf->pulseWidth(pulseWidth);
+		}
+		if (osc2_wf==WAVEFORM_PULSE || osc2_wf==WAVEFORM_BANDLIMIT_PULSE){
 			o->wf2->pulseWidth(pulseWidth);
 		}
-		o->wf->begin(progs[currentProgram]);
-		o->wf2->begin(progs[currentProgram]);
+		o->wf->begin(waveforms[osc1_wf]);
+		o->wf2->begin(waveforms[osc2_wf]);
 	} while(++o < end);
 }
 
 inline void updatePulseWidth() {
-	if (currentProgram==WAVEFORM_PULSE || currentProgram==WAVEFORM_BANDLIMIT_PULSE) {
+	if (osc1_wf==WAVEFORM_PULSE || osc1_wf==WAVEFORM_BANDLIMIT_PULSE) {
 		Oscillator *o=oscs,*end=oscs+NVOICES;
 		do {
 			if (o->note < 0) continue;
 			o->wf->pulseWidth(pulseWidth);
+		} while(++o < end);
+	}
+	if (osc2_wf==WAVEFORM_PULSE || osc2_wf==WAVEFORM_BANDLIMIT_PULSE) {
+		Oscillator *o=oscs,*end=oscs+NVOICES;
+		do {
+			if (o->note < 0) continue;
 			o->wf2->pulseWidth(pulseWidth);
 		} while(++o < end);
 	}
@@ -567,6 +716,7 @@ void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
 #endif
 
 	notesAdd(notesPressed,note,velocity);
+	LFOupdate(true);
 
 	Oscillator *o=oscs;
 	if (portamentoOn) {
@@ -695,69 +845,51 @@ void OnAfterTouchPoly(uint8_t channel, uint8_t note, uint8_t value) {
 void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 	if (!omniOn && channel != SYNTH_MIDICHANNEL) return;
 
-	switch (control) {
-	case 0: // bank select, do nothing (switch sounds via program change only)
-		break;
-	case 13: // portamento time
-	{
+	if (control==0){
+		// bank select, do nothing (switch sounds via program change only)
+	} else if (control==2){
+		// attack
+		envAttack = value*11880./127.;
+		updateEnvelope();
+	} else if (control==3){
+		// decay
+		envDecay = value*11880./127.;
+		updateEnvelope();
+	} else if (control==4){
+		// sustain
+		envSustain = value/127.;
+		updateEnvelope();
+	} else if (control==5){
+		// release
+		envRelease = value*11880./127.;
+		updateEnvelope();
+	} else if (control==6){
+		// attack
+		env2Attack = value*5000./127.;
+		updateEnvelope2();
+	} else if (control==8){
+		// decay
+		env2Decay = value*5000./127.;
+		updateEnvelope2();
+	} else if (control==9){
+		// sustain
+		env2Sustain = value/127.;
+		updateEnvelope2();
+	} else if (control==12){
+		// release
+		env2Release = value*5000./127.;
+		updateEnvelope2();
+	} else if (control==13){
+		// portamento time
 		float portamentoRange = portamentoStep*portamentoTime;
 		portamentoTime = value*value*value;
 		portamentoStep = portamentoRange/portamentoTime;
-		break;
-	}
-	case 14: // volume
+	} else if (control==14){
+		// volume
 		channelVolume = value/127.;
 		updateVolume();
-		break;
-	case 2: // attack
-		envAttack = value*11880./127.;
-		updateEnvelope();
-		break;
-	case 3: // decay
-		envDecay = value*11880./127.;
-		updateEnvelope();
-		break;
-	case 4: // sustain
-		envSustain = value/127.;
-		updateEnvelope();
-		break;
-	case 5: // release
-		envRelease = value*11880./127.;
-		updateEnvelope();
-		break;
-	case 6: // attack
-		env2Attack = value*5000./127.;
-		updateEnvelope2();
-		break;
-	case 8: // decay
-		env2Decay = value*5000./127.;
-		updateEnvelope2();
-		break;
-	case 9: // sustain
-		env2Sustain = value/127.;
-		updateEnvelope2();
-		break;
-	case 12: // release
-		env2Release = value*5000./127.;
-		updateEnvelope2();
-		break;
-	case 22: // filter frequency
-		//filtFreq = value/2.5*AUDIO_SAMPLE_RATE_EXACT/127.;
-		filtFreq = (1.0*value)/127;
-		filtFreq=pow(filtFreq, 3)*17000;
-		updateFilter();
-		break;
-	case 21: // filter resonance
-		//filtReso = value*4.1/127.+0.9;
-		filtReso = (1.0*value)/127;
-		filtReso=map(filtReso, 0, 1, 1.11, 5.0);
-		updateFilter();
-		break;
-	case 20: // filter octaves
-		filtOct = 7.*value/127.;
-		updateFilter();
-		break;
-	case 18: // layer mix
+	} else if (control==15){
+		// layer mix
 		if (value>63) {
 			layerMix1 = map((1.0*value), 64., 127., 1., 0.);
 			layerMix2 = 1.;
@@ -766,62 +898,86 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			layerMix2 = map((1.0*value), 63., 0., 1., 0.);
 		}
 		updateVolume();
-		break;
-	case 19: // filter mode
-		if (value < FILTERMODE_N) {
-			filterMode = FilterMode_t(value);
-		} else {
-			filterMode = FilterMode_t((filterMode+1)%FILTERMODE_N);
-		}
-		updateFilterMode();
-		break;
-	case 23: // poly mode
-		switch (value){
-			case 127:
-				// turn on poly mode
-				polyOn=true;
-				portamentoOn=false;
-				updatePolyMode();
-				break;
-		}
-		break;
-	case 33: // mono mode
-		switch (value){
-			case 127:
-				// turn off poly mode
-				polyOn=false;
-				portamentoOn=true;
-				updatePolyMode();
-				break;
-		}
-		break;
-	case 16: // layer width
+	} else if (control==16){
+		// LFO1 speed
+		float xSpeed = 1.-(value / 127.);
+		xSpeed = pow(100, (xSpeed - 1));
+		LFOspeed = (70000 * xSpeed)-500;
+	} else if (control==17){
+		// LFO1 depth
+		float xDepth = value / 127.;
+		LFOdepth = xDepth;
+	} else if (control==18){
+		// layer width
 		layerWidth = ((1+value)/127.);
 		updateLayer();
-		break;
-	case 17: // pulse width
-		pulseWidth = (value/127.)*0.9+0.05;
-		updatePulseWidth();
-		break;
-	case 47: // program change down
-		if (value>=127 && lastProgCC != value){
-			if (value>0) {
-				currentProgram--;
-				updateProgram();
-			}
+	} else if (control==20){
+		// filter octaves
+		filtOct = 7.*value/127.;
+		updateFilter();
+	} else if (control==21){
+		// filter resonance
+		//filtReso = value*4.1/127.+0.9;
+		filtReso = (1.0*value)/127;
+		filtReso=map(filtReso, 0, 1, 1.11, 5.0);
+		updateFilter();
+	} else if (control==22){
+		// filter frequency
+		//filtFreq = value/2.5*AUDIO_SAMPLE_RATE_EXACT/127.;
+		filtFreq = (1.0*value)/127;
+		filtFreq=pow(filtFreq, 3)*17000;
+		updateFilter();
+	} else if (control==25){
+		// LFO mode
+		if (value>=127){
+			LFOmode++;
+			if (LFOmode>=LFO_COUNT_OF_MODES) LFOmode=0;
 		}
-		lastProgCC=value;
-		break;
-	case 48: // program change up
-		if (value>=127 && lastProgCC != value){
-			if (currentProgram<NPROGS) {
-				currentProgram++;
-				updateProgram();
-			}
+	} else if (control==26){
+		// osc1 waveform
+		if (value>=127){
+			osc1_wf++;
+			if (osc1_wf>=COUNT_OF_WAVEFORMS) osc1_wf=0;
+			updateWaveform();
 		}
-		lastProgCC=value;
-		break;
-	case 64: // sustain/damper pedal
+	} else if (control==36){
+		// osc2 waveform
+		if (value>=127){
+			osc2_wf++;
+			if (osc2_wf>=COUNT_OF_WAVEFORMS) osc2_wf=0;
+			updateWaveform();
+		}
+	} else if (control==31){
+		// filter mode
+		if (value>=127){
+			FILTERmode++;
+			if (FILTERmode >= FILTERMODE_COUNT_OF_MODES) FILTERmode=0;
+			updateFilterMode();
+		}
+	} else if (control==35){
+		// LFO shape
+		if (value>=127){
+			LFOshape++;
+			if (LFOshape>=LFO_COUNT_OF_SHAPES) LFOshape=0;
+		}
+	} else if (control==23){
+		// poly mode
+		if (value>=127){
+			// turn on poly mode
+			polyOn=true;
+			portamentoOn=false;
+			updatePolyMode();
+		}
+	} else if (control==33){
+		// mono mode
+		if (value>=127){
+			// turn off poly mode
+			polyOn=false;
+			portamentoOn=true;
+			updatePolyMode();
+		}
+	} else if (control==64){
+		// sustain/damper pedal
 		if (value > 63) sustainPressed = true;
 		else {
 			sustainPressed = false;
@@ -830,31 +986,21 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				if (o->note != -1 && !notesFind(notesPressed,o->note)) oscOff(*o);
 			} while (++o < end);
 		}
-		break;
-	case 31: // portamento on
-		if (polyOn) break;
-		if (value > 63) {
-			portamentoOn = true;
-			if (oscs->note != -1) portamentoPos = oscs->note;
-		}
-		break;
-	case 41: // portamento off
-		if (polyOn) break;
-		if (value > 126) {
-			portamentoOn = false;
-		}
-		break;
-	case 25: // transpose
-		if (value>=127){	
-			transpose++;
-		}
-		break;
-	case 35: // transpose
-		if (value>=127){	
-			transpose--;
-		}
-		break;
+	} else {
+#if SYNTH_DEBUG > 0
+		SYNTH_SERIAL.print("Unhandled Control Change: channel ");
+		SYNTH_SERIAL.print(channel);
+		SYNTH_SERIAL.print(", control ");
+		SYNTH_SERIAL.print(control);
+		SYNTH_SERIAL.print(", value ");
+		SYNTH_SERIAL.println(value);
+#endif
+	}
 	/*
+	case x: // pulse width
+		pulseWidth = (value/127.)*0.9+0.05;
+		updatePulseWidth();
+		break;
 	case x: // controller reset
 		resetAll();
 		break;
@@ -923,17 +1069,6 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 		pitchScale = 12./value;
 		break;
 	*/
-	default:
-#if SYNTH_DEBUG > 0
-		SYNTH_SERIAL.print("Unhandled Control Change: channel ");
-		SYNTH_SERIAL.print(channel);
-		SYNTH_SERIAL.print(", control ");
-		SYNTH_SERIAL.print(control);
-		SYNTH_SERIAL.print(", value ");
-		SYNTH_SERIAL.println(value);
-#endif
-		break;
-	}
 #if SYNTH_DEBUG > 0
 	SYNTH_SERIAL.print("Control Change: channel ");
 	SYNTH_SERIAL.print(channel);
@@ -975,13 +1110,6 @@ void OnProgramChange(uint8_t channel, uint8_t program) {
 	SYNTH_SERIAL.print(", program ");
 	SYNTH_SERIAL.println(program);
 #endif
-
-	if (program <NPROGS) {
-		if( program!=currentProgram) {
-			currentProgram = program;
-			updateProgram();
-		}
-	}
 }
 
 void OnAfterTouch(uint8_t channel, uint8_t pressure) {
@@ -1078,8 +1206,10 @@ void printInfo() {
 	SYNTH_SERIAL.println();
 	SYNTH_SERIAL.print("Master Volume:        ");
 	SYNTH_SERIAL.println(masterVolume);
-	SYNTH_SERIAL.print("Current Program:      ");
-	SYNTH_SERIAL.println(currentProgram);
+	SYNTH_SERIAL.print("OSC1 Waveform  :      ");
+	SYNTH_SERIAL.println(osc1_wf);
+	SYNTH_SERIAL.print("OSC2 Waveform  :      ");
+	SYNTH_SERIAL.println(osc2_wf);
 	SYNTH_SERIAL.print("Poly On:              ");
 	SYNTH_SERIAL.println(polyOn);
 	SYNTH_SERIAL.print("Omni On:              ");
@@ -1099,7 +1229,7 @@ void printInfo() {
 	SYNTH_SERIAL.println(pitchBend);
 	SYNTH_SERIAL.println();
 	SYNTH_SERIAL.print("Filter Mode:          ");
-	SYNTH_SERIAL.println(filterMode);
+	SYNTH_SERIAL.println(FILTERmode);
 	SYNTH_SERIAL.print("Filter Frequency:     ");
 	SYNTH_SERIAL.println(filtFreq);
 	SYNTH_SERIAL.print("Filter Resonance:     ");
@@ -1137,6 +1267,7 @@ void printInfo() {
 	SYNTH_SERIAL.print("Envelope2 Release:     ");
 	SYNTH_SERIAL.println(env2Release);
 	SYNTH_SERIAL.println();
+	/*
 	SYNTH_SERIAL.print("Flanger On:           ");
 	SYNTH_SERIAL.println(flangerOn);
 	SYNTH_SERIAL.print("Flanger Offset:       ");
@@ -1147,6 +1278,7 @@ void printInfo() {
 	SYNTH_SERIAL.println(flangerFreqCoarse);
 	SYNTH_SERIAL.print("Flanger Freq. Fine:   ");
 	SYNTH_SERIAL.println(flangerFreqFine);
+	*/
 	SYNTH_SERIAL.print("Delay Line Length:    ");
 	SYNTH_SERIAL.println(DELAY_LENGTH);
 	SYNTH_SERIAL.println();
@@ -1220,11 +1352,13 @@ void setup() {
 	sgtl5000_1.volume(masterVolume);
 
 	resetAll();
-	updateProgram();
-	
+	updateWaveform();
+
+	/*
 	flangerL.begin(delaylineL,DELAY_LENGTH,FLANGE_DELAY_PASSTHRU,0,0);
 	flangerR.begin(delaylineR,DELAY_LENGTH,FLANGE_DELAY_PASSTHRU,0,0);
 	updateFlanger();
+	*/
 
 	mixer9.gain(0, 1);
 	mixer10.gain(0, 1);
@@ -1305,6 +1439,7 @@ void loop() {
 #endif
 	// ns - no pot, so disable this for now
 	//updateMasterVolume();
+  LFOupdate(false);
 	updatePortamento();
 
 #if SYNTH_DEBUG > 0
