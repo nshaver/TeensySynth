@@ -6,6 +6,8 @@ Forked from https://github.com/jmechnich/TeensySynth
 * added second per-voice oscillator
 * added bandlimit waveforms to eliminate aliasing
 * added filter envelope
+* LFO
+* sample and hold
 * modified as needed to support teensy 4.1 and multiple MIDI input devices
 
 ### Useful links
