@@ -12,6 +12,7 @@ Forked from https://github.com/jmechnich/TeensySynth
 * misc playability fixes. allow retrigger of notes when sustain is held. in mono mode retrigger still-held notes when current note is released.
 * reorganized CC changes into a mapped array. created a mapped array for all parameters.
 * patch save/load/select into EEPROM
+* added optional support for inexpensive 128x64 i2c OLED display
 
 ### Useful links
 * [Teensy Audio Library](http://www.pjrc.com/teensy/td_libs_Audio.html)
