@@ -5,6 +5,36 @@
 // set SYNTH_DEBUG to enable debug logging (1=most,2=all messages)
 #define SYNTH_DEBUG 0
 
+#define USE_OLED 1
+#ifdef USE_OLED
+//////////////////////////
+// oled - on esp8266 connect sda=d1 and scl=d2, connect 3.3v and ground
+//			- on nano connect sda=a4 and scl=a5, connect 5v and ground
+//			- on teensy connect sda=a4 and scl=a5, connect 5v and ground
+//////////////////////////
+#include <i2c_t3.h>
+//#include <SPI.h>
+//#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Fonts/FreeMonoBold18pt7b.h>
+#include <Fonts/FreeMono12pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/TomThumb.h>
+#define OLED_RESET LED_BUILTIN
+Adafruit_SSD1306 display(128, 64, &Wire, OLED_RESET);
+unsigned long next_oled_update_ms=0;
+#endif
+// create these string vars regardless so we don't have to put so many ifdefs all over the place
+// text updates immediately, text1-4 update periodically via the bottom of the loop.
+String text;
+String text1;
+String text2;
+String text3;
+String text4;
+
+#include <i2c_t3.h>
+
 #include <EEPROM.h>
 
 // define MIDI channel
@@ -219,6 +249,62 @@ int8_t   portamentoDir;
 float    portamentoStep;
 float    portamentoPos;
 
+#ifdef USE_OLED
+//////////////////////////////////////////////////////////////////////
+// OLED functions
+//////////////////////////////////////////////////////////////////////
+void showtext(int line_number, String text, boolean clearDisplay){
+	// if debugging is enabled then it makes sense to send this new text to the debug window
+#if SYNTH_DEBUG > 0
+			SYNTH_SERIAL.println(text);
+#endif
+
+	if (clearDisplay) {
+		display.clearDisplay();
+		display.drawRect(0, 0, 128, 64, WHITE);
+
+		display.drawRect(0, 0, 128, 22, WHITE);
+		display.drawRect(0, 21,128, 22, WHITE);
+		display.drawRect(0, 42,128, 23, WHITE);
+		//display.drawRect(0, 42,128, 11, WHITE);
+		//display.drawRect(0, 52,128, 12, WHITE);
+	}
+
+	int tx=2, ty=0;
+	int rx=2, ry=0;
+	int rh=21;
+	if (line_number==1){
+		display.setFont(&FreeSans9pt7b);
+		ty=15;
+		ry=1;
+		rh=20;
+	} else if (line_number==2){
+		display.setFont(&FreeSans9pt7b);
+		ty=37;
+		ry=22;
+		rh=20;
+	} else if (line_number==3){
+		display.setFont(&TomThumb);
+		ty=51;
+		ry=43;
+		rh=9;
+	} else if (line_number==4){
+		display.setFont(&TomThumb);
+		ty=61;
+		ry=53;
+		rh=10;
+	} else {
+		// just do two lines, but 3 would be y=52 if needed in the future
+		return;
+	}
+	display.fillRect(1, ry, 126, rh, BLACK);
+	display.setTextColor(WHITE);
+	display.setCursor(tx, ty);
+	display.print(text);
+	display.display();
+}
+#endif
+
 //////////////////////////////////////////////////////////////////////
 // EEPROM storage variables and functions
 //////////////////////////////////////////////////////////////////////
@@ -394,6 +480,10 @@ void load_program(){
 		SYNTH_SERIAL.print("patch_number ");
 		SYNTH_SERIAL.print(patch_number);
 		SYNTH_SERIAL.println(" loaded");
+#endif
+#ifdef USE_OLED
+	text=(String)"Preset " + patch_number;
+	showtext(1, text, false);
 #endif
 	} else {
 #if SYNTH_DEBUG > 0
@@ -1060,6 +1150,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			layerWidth = ((1+value)/127.);
 			updateLayer();
+			text2=(String)"O2 Tune = " + value;
 		}
 
 		// env attack
@@ -1067,6 +1158,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			envAttack = value*11880./127.;
 			updateEnvelope();
+			text2=(String)"Env A = " + value;
 		}
 
 		// env decay
@@ -1074,6 +1166,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			envDecay = value*11880./127.;
 			updateEnvelope();
+			text2=(String)"Env D = " + value;
 		}
 
 		if (c==PRG_ENV_S && control==CC_PARAM_MAP[PRG_ENV_S]){
@@ -1081,6 +1174,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			envSustain = value/127.;
 			updateEnvelope();
+			text2=(String)"Env S = " + value;
 		}
 
 		if (c==PRG_ENV_R && control==CC_PARAM_MAP[PRG_ENV_R]){
@@ -1088,6 +1182,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			envRelease = value*11880./127.;
 			updateEnvelope();
+			text2=(String)"Env R = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_A && control==CC_PARAM_MAP[PRG_FILT_ENV_A]){
@@ -1095,6 +1190,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			env2Attack = value*5000./127.;
 			updateEnvelope2();
+			text2=(String)"FEnv A = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_D && control==CC_PARAM_MAP[PRG_FILT_ENV_D]){
@@ -1102,6 +1198,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			env2Decay = value*5000./127.;
 			updateEnvelope2();
+			text2=(String)"FEnv D = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_S && control==CC_PARAM_MAP[PRG_FILT_ENV_S]){
@@ -1109,6 +1206,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			env2Sustain = value/127.;
 			updateEnvelope2();
+			text2=(String)"FEnv S = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_R && control==CC_PARAM_MAP[PRG_FILT_ENV_R]){
@@ -1116,6 +1214,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			env2Release = value*5000./127.;
 			updateEnvelope2();
+			text2=(String)"FEnv R = " + value;
 		}
 
 		if (c==PRG_PORT_SPEED && control==CC_PARAM_MAP[PRG_PORT_SPEED]){
@@ -1124,6 +1223,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			float portamentoRange = portamentoStep*portamentoTime;
 			portamentoTime = value*value*value;
 			portamentoStep = portamentoRange/portamentoTime;
+			text2=(String)"Port = " + value;
 		}
 
 		if (c==PRG_MASTER_VOL && control==CC_PARAM_MAP[PRG_MASTER_VOL]){
@@ -1131,6 +1231,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			channelVolume = value/127.;
 			updateVolume();
+			text2=(String)"Vol = " + value;
 		}
 
 		if (c==PRG_OSC_MIX && control==CC_PARAM_MAP[PRG_OSC_MIX]){
@@ -1144,6 +1245,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				layerMix2 = map((1.0*value), 63., 0., 1., 0.);
 			}
 			updateVolume();
+			text2=(String)"Osc Mix = " + value;
 		}
 
 		if (c==PRG_LFO_SPEED && control==CC_PARAM_MAP[PRG_LFO_SPEED]){
@@ -1152,6 +1254,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			float xSpeed = 1.-(value / 127.);
 			xSpeed = pow(100, (xSpeed - 1));
 			LFOspeed = (70000 * xSpeed)-500;
+			text2=(String)"LFO Sp = " + value;
 		}
 
 		if (c==PRG_LFO_DEPTH && control==CC_PARAM_MAP[PRG_LFO_DEPTH]){
@@ -1159,6 +1262,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			float xDepth = value / 127.;
 			LFOdepth = xDepth;
+			text2=(String)"LFO Dp = " + value;
 		}
 
 		if (c==PRG_FILT_OCT && control==CC_PARAM_MAP[PRG_FILT_OCT]){
@@ -1166,6 +1270,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			filtOct = 7.*value/127.;
 			updateFilter();
+			text2=(String)"F Oct = " + value;
 		}
 
 		if (c==PRG_FILT_RES && control==CC_PARAM_MAP[PRG_FILT_RES]){
@@ -1175,6 +1280,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtReso = (1.0*value)/127;
 			filtReso=map(filtReso, 0, 1, 1.11, 5.0);
 			updateFilter();
+			text2=(String)"F Res = " + value;
 		}
 
 		if (c==PRG_FILT_FREQ && control==CC_PARAM_MAP[PRG_FILT_FREQ]){
@@ -1184,6 +1290,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtFreq = (1.0*value)/127;
 			filtFreq=pow(filtFreq, 3)*17000;
 			updateFilter();
+			text2=(String)"F Freq = " + int(filtFreq);
 		}
 
 		if (c==PRG_LFO_MODE && control==CC_PARAM_MAP[PRG_LFO_MODE]){
@@ -1195,6 +1302,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				LFOmode++;
 				if (LFOmode>=LFO_COUNT_OF_MODES) LFOmode=0;
 				ProgramArr[c]=LFOmode;
+				text2=(String)"LFO = " + LFOmode;
 			}
 		}
 
@@ -1209,6 +1317,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				if (osc1_wf>=COUNT_OF_WAVEFORMS) osc1_wf=0;
 				ProgramArr[c]=osc1_wf;
 				updateWaveform();
+				text2=(String)"WF1 = " + osc1_wf;
 			}
 		}
 
@@ -1223,6 +1332,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				if (osc2_wf>=COUNT_OF_WAVEFORMS) osc2_wf=0;
 				ProgramArr[c]=osc2_wf;
 				updateWaveform();
+				text2=(String)"WF2 = " + osc2_wf;
 			}
 		}
 
@@ -1237,6 +1347,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				if (FILTERmode >= FILTERMODE_COUNT_OF_MODES) FILTERmode=0;
 				ProgramArr[c]=FILTERmode;
 				updateFilterMode();
+				text2=(String)"F Mode = " + FILTERmode;
 			}
 		}
 
@@ -1249,6 +1360,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				LFOshape++;
 				if (LFOshape>=LFO_COUNT_OF_SHAPES) LFOshape=0;
 				ProgramArr[c]=LFOshape;
+				text2=(String)"LFO Shape = " + LFOshape;
 			}
 		}
 
@@ -1265,11 +1377,13 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 					polyOn=false;
 					portamentoOn=true;
 					updatePolyMode();
+					text2=(String)"Poly Mode Off";
 				} else {
 					// turn on poly mode
 					polyOn=true;
 					portamentoOn=false;
 					updatePolyMode();
+					text2=(String)"Poly Mode On";
 				}
 				ProgramArr[c]=polyOn;
 			}
@@ -1296,6 +1410,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 	SYNTH_SERIAL.print("Next patch: ");
 	SYNTH_SERIAL.println(patch_number);
 #endif
+			text3=(String)"Patch " + patch_number;
 		}
 	} else if (control==48){
 		if (value >= 127){
@@ -1306,10 +1421,12 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 	SYNTH_SERIAL.print("Next patch: ");
 	SYNTH_SERIAL.println(patch_number);
 #endif
+			text3=(String)"Patch " + patch_number;
 		}
 	} else if (control==49){
 		if (value >= 127){
 			init_program();
+			text1=(String)"Init Preset";
 #if SYNTH_DEBUG > 0
 	SYNTH_SERIAL.println("init program:");
 #endif
@@ -1416,6 +1533,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 	SYNTH_SERIAL.print(", value ");
 	SYNTH_SERIAL.println(value);
 #endif
+	text4=(String)"CC " + control + " = " + value;;
 }
 
 void OnPitchChange(uint8_t channel, int pitch) {
@@ -1694,6 +1812,17 @@ void setup() {
 	SYNTH_SERIAL.begin(115200);
 #endif
 	
+#ifdef USE_OLED
+	//////////////////////////////////////////////
+	// start oled setup
+	//////////////////////////////////////////////
+	Wire.setClock(2400000UL); // set i2c frequency to 400kHz
+	display.begin(SSD1306_SWITCHCAPVCC, 0x3C);	// for 128x64 use 0x3D, for 128x32 use 0x3C
+	display.setFont(&FreeSans9pt7b);
+	text=(String)"Teensy Synth";
+	showtext(1, text, true);
+#endif
+
 	init_cc_param_map();
 
 	AudioMemory(AMEMORY);
@@ -1796,5 +1925,29 @@ void loop() {
 	performanceCheck();
 	while (SYNTH_SERIAL.available())
 		selectCommand(SYNTH_SERIAL.read());
+#endif
+
+#ifdef USE_OLED
+	// if text1-4 are used, only allow update of screen every once it a while. do not let it
+	// block other more-important processes by spamming the screen with updates.
+	if (next_oled_update_ms<millis()){
+		if (text1!=""){
+			showtext(1, text1, false);
+			text1="";
+		}
+		if (text2!=""){
+			showtext(2, text2, false);
+			text2="";
+		}
+		if (text3!=""){
+			showtext(3, text3, false);
+			text3="";
+		}
+		if (text4!=""){
+			showtext(4, text4, false);
+			text4="";
+		}
+		next_oled_update_ms=millis()+100;
+	}
 #endif
 }
