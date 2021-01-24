@@ -3,7 +3,9 @@
 #define USE_BANDLIMIT_WAVEFORMS 1
 
 // set SYNTH_DEBUG to enable debug logging (1=most,2=all messages)
-#define SYNTH_DEBUG 1
+#define SYNTH_DEBUG 0
+
+#include <EEPROM.h>
 
 // define MIDI channel
 #define SYNTH_MIDICHANNEL 1
@@ -16,16 +18,16 @@
 
 // gain at oscillator/filter input stage (1:1)
 // keep low so filter does not saturate with resonance
-#define GAIN_OSC 0.5
+#define GAIN_OSC 0.7
 
 // gain in final mixer stage for polyphonic mode (4:1)
 // (0.25 is the safe value but larger sounds better :) )
 //#define GAIN_POLY 1.
-#define GAIN_POLY 0.25
+#define GAIN_POLY 0.45
 
 // gain in final mixer stage for monophonic modes
 //#define GAIN_MONO 1.
-#define GAIN_MONO 0.25
+#define GAIN_MONO 0.45
 
 // define delay lines for modulation effects
 #define DELAY_LENGTH (16*AUDIO_BLOCK_SAMPLES)
@@ -115,10 +117,10 @@ uint8_t waveforms[COUNT_OF_WAVEFORMS] = {
 #endif
 
 enum FilterModes {
-	FILTERMODE_OFF,
 	FILTERMODE_LOWPASS,
 	FILTERMODE_BANDPASS,
 	FILTERMODE_HIGHPASS,
+	FILTERMODE_OFF,
 	FILTERMODE_COUNT_OF_MODES
 };
 byte FILTERmode=FILTERMODE_LOWPASS;
@@ -218,6 +220,207 @@ float    portamentoStep;
 float    portamentoPos;
 
 //////////////////////////////////////////////////////////////////////
+// EEPROM storage variables and functions
+//////////////////////////////////////////////////////////////////////
+int patch_number=0;
+
+// define patch variables here. new variables should be put at the end of PROGRAMvars, but before the count
+enum PROGRAMvars {
+	PRG_KEY_1,
+	PRG_KEY_2,
+	PRG_OSC1_TUNE,
+	PRG_OSC2_TUNE,
+	PRG_OSC_MIX,
+	PRG_OSC1_WF,
+	PRG_OSC2_WF,
+	PRG_PULSE_WIDTH,
+	PRG_PORT_SPEED,
+	PRG_POLY_MODE,
+	PRG_FILT_FREQ,
+	PRG_FILT_RES,
+	PRG_FILT_OCT,
+	PRG_FILT_MODE,
+	PRG_LFO_SPEED,
+	PRG_LFO_DEPTH,
+	PRG_LFO_SHAPE,
+	PRG_LFO_MODE,
+	PRG_LFO_DEST,
+	PRG_ENV_A,
+	PRG_ENV_D,
+	PRG_ENV_S,
+	PRG_ENV_R,
+	PRG_FILT_ENV_A,
+	PRG_FILT_ENV_D,
+	PRG_FILT_ENV_S,
+	PRG_FILT_ENV_R,
+	PRG_MASTER_VOL,
+	PRG_COUNT_OF_VARS
+};
+
+byte CC_PARAM_MAP[127]={};
+// map MIDI control channels to parameter control here
+void init_cc_param_map(){
+	CC_PARAM_MAP[PRG_OSC1_TUNE]		= 0;
+	CC_PARAM_MAP[PRG_OSC2_TUNE]		= 18;
+	CC_PARAM_MAP[PRG_OSC_MIX]			= 15;
+	CC_PARAM_MAP[PRG_OSC1_WF]			= 26;
+	CC_PARAM_MAP[PRG_OSC2_WF]			= 36;
+	CC_PARAM_MAP[PRG_PULSE_WIDTH]	= 0;
+	CC_PARAM_MAP[PRG_PORT_SPEED]	= 13;
+	CC_PARAM_MAP[PRG_POLY_MODE]		= 23;
+	CC_PARAM_MAP[PRG_FILT_FREQ]		= 22;
+	CC_PARAM_MAP[PRG_FILT_RES]		= 21;
+	CC_PARAM_MAP[PRG_FILT_OCT]		= 20;
+	CC_PARAM_MAP[PRG_FILT_MODE]		= 31;
+	CC_PARAM_MAP[PRG_LFO_SPEED]		= 16;
+	CC_PARAM_MAP[PRG_LFO_DEPTH]		= 17;
+	CC_PARAM_MAP[PRG_LFO_SHAPE]		= 35;
+	CC_PARAM_MAP[PRG_LFO_MODE]		= 25;
+	CC_PARAM_MAP[PRG_LFO_DEST]		= 0;
+	CC_PARAM_MAP[PRG_ENV_A]				= 2;
+	CC_PARAM_MAP[PRG_ENV_D]				= 3;
+	CC_PARAM_MAP[PRG_ENV_S]				= 4;
+	CC_PARAM_MAP[PRG_ENV_R]				= 5;
+	CC_PARAM_MAP[PRG_FILT_ENV_A]	= 6;
+	CC_PARAM_MAP[PRG_FILT_ENV_D]	= 8;
+	CC_PARAM_MAP[PRG_FILT_ENV_S]	= 9;
+	CC_PARAM_MAP[PRG_FILT_ENV_R]	= 12;
+	CC_PARAM_MAP[PRG_MASTER_VOL]	= 14;
+}
+
+// setup a key1/2 that will be used to verify whether or not a load from an eeprom 
+// slot is probably a patch that was stored by this program
+byte PROGRAM_KEY_1=123;
+byte PROGRAM_KEY_2=45;
+byte ProgramArr[50];
+void init_program(){
+	// initialize a default program
+	for (uint8_t i=0; i<PRG_COUNT_OF_VARS; i++) {
+		ProgramArr[PRG_KEY_1]=PROGRAM_KEY_1;
+		ProgramArr[PRG_KEY_2]=PROGRAM_KEY_2;
+		ProgramArr[PRG_OSC1_TUNE]=0;
+		ProgramArr[PRG_OSC2_TUNE]=0;
+		ProgramArr[PRG_OSC_MIX]=65;
+		ProgramArr[PRG_OSC1_WF]=WAVEFORM_BANDLIMIT_SAWTOOTH;
+		ProgramArr[PRG_OSC2_WF]=WAVEFORM_BANDLIMIT_SAWTOOTH;
+		ProgramArr[PRG_PULSE_WIDTH]=65;
+		ProgramArr[PRG_PORT_SPEED]=0;
+		ProgramArr[PRG_POLY_MODE]=1;
+		ProgramArr[PRG_FILT_FREQ]=50;
+		ProgramArr[PRG_FILT_RES]=50;
+		ProgramArr[PRG_FILT_OCT]=50;
+		ProgramArr[PRG_FILT_MODE]=FILTERMODE_LOWPASS;
+		ProgramArr[PRG_LFO_MODE]=LFO_MODE_OFF;
+		ProgramArr[PRG_LFO_SPEED]=65;
+		ProgramArr[PRG_LFO_DEPTH]=65;
+		ProgramArr[PRG_LFO_SHAPE]=LFO_SINE;
+		ProgramArr[PRG_LFO_DEST]=0;
+		ProgramArr[PRG_ENV_A]=0;
+		ProgramArr[PRG_ENV_D]=0;
+		ProgramArr[PRG_ENV_S]=127;
+		ProgramArr[PRG_ENV_R]=0;
+		ProgramArr[PRG_FILT_ENV_A]=0;
+		ProgramArr[PRG_FILT_ENV_D]=0;
+		ProgramArr[PRG_FILT_ENV_S]=127;
+		ProgramArr[PRG_FILT_ENV_R]=0;
+		ProgramArr[PRG_MASTER_VOL]=127;
+	}
+	set_program();
+}
+
+void save_program(){
+	if (patch_number>=0 && patch_number<50){
+		ProgramArr[PRG_KEY_1]=PROGRAM_KEY_1;
+		ProgramArr[PRG_KEY_2]=PROGRAM_KEY_2;
+
+		// loop through each CC_PARAM_MAP and send the patch value for that variable for a CC change
+		for (uint8_t i=0; i<50; i++) {
+			long this_address=(50*patch_number) + i;
+			byte this_value=ProgramArr[i];
+			EEPROM.write(this_address, this_value);
+		}
+#if SYNTH_DEBUG > 0
+			SYNTH_SERIAL.print("patch_number ");
+			SYNTH_SERIAL.print(patch_number);
+			SYNTH_SERIAL.println(" saved");
+#endif
+	} else {
+#if SYNTH_DEBUG > 0
+		SYNTH_SERIAL.print("save_program: cannot save, invalid patch_number: ");
+		SYNTH_SERIAL.println(patch_number);
+#endif
+	}
+}
+
+void load_program(){
+	if (patch_number>=0 && patch_number<50){
+		ProgramArr[PRG_KEY_1]=PROGRAM_KEY_1;
+		ProgramArr[PRG_KEY_2]=PROGRAM_KEY_2;
+
+		bool load_key_matches=true;
+		long this_address;
+		byte this_value;
+
+		// loop through each CC_PARAM_MAP and send the patch value for that variable for a CC change
+		for (uint8_t i=0; i<50; i++) {
+			this_address=(50*patch_number) + i;
+			this_value;
+			this_value=EEPROM.read(this_address);
+			
+			if (i==PRG_KEY_1){
+				if (this_value!=PROGRAM_KEY_1){
+					load_key_matches=false;
+				}
+			} else if (i==PRG_KEY_2){
+				if (this_value!=PROGRAM_KEY_2){
+					load_key_matches=false;
+				}
+			} else if (i>PRG_KEY_2){
+				if (load_key_matches==false){
+					// keys did not match, cannot load this patch
+#if SYNTH_DEBUG > 0
+					SYNTH_SERIAL.print("load_program: no key match for patch_number ");
+					SYNTH_SERIAL.println(patch_number);
+#endif
+					break;
+				} else {
+					ProgramArr[i]=this_value;
+				}
+			}
+		}
+		set_program();
+
+#if SYNTH_DEBUG > 0
+		SYNTH_SERIAL.print("patch_number ");
+		SYNTH_SERIAL.print(patch_number);
+		SYNTH_SERIAL.println(" loaded");
+#endif
+	} else {
+#if SYNTH_DEBUG > 0
+		SYNTH_SERIAL.print("load_program: cannot load, invalid patch_number: ");
+		SYNTH_SERIAL.println(patch_number);
+#endif
+	}
+}
+
+void set_program(){
+	if (ProgramArr[PRG_KEY_1]!=PROGRAM_KEY_1 ||
+			ProgramArr[PRG_KEY_2]!=PROGRAM_KEY_2){
+		// does not seem to be a valid program
+		return;
+	}
+
+	// loop through each CC_PARAM_MAP and send the patch value for that variable for a CC change
+	for (uint8_t i=0; i<PRG_COUNT_OF_VARS; i++) {
+		if (CC_PARAM_MAP[i]>0){
+			// send MIDI channel=99 to tell the OnControlChange program that for latching values you just want to 
+			// use whatever value is sent in, not expect 127 to cycle through values
+			OnControlChange(99, CC_PARAM_MAP[i], ProgramArr[i]);
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // Handling of sounding and pressed notes
 //////////////////////////////////////////////////////////////////////
 int8_t notesOn[NVOICES]      = { -1, -1, -1, -1, -1, -1, -1, -1, };
@@ -269,6 +472,7 @@ inline bool notesFind(int8_t* notes, uint8_t note) {
 inline void updateFilterMode() {
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
+		// enable mixer input that corresponds to the lfo type, expects 3=unfiltered
 		for (uint8_t fm=0; fm<FILTERMODE_COUNT_OF_MODES; ++fm) {
 			if (fm == FILTERmode) o->mix->gain(fm,filtAtt);
 			else                  o->mix->gain(fm,0);
@@ -734,7 +938,8 @@ void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
 		if (sustainPressed && notesFind(notesOn,note)) {
 			do {
 				if (o->note == note) {
-					curOsc = o;
+					// need to retrigger a sustained note. turn off and reuse this osc below when it retriggers.
+					curOsc = OnNoteOffReal(channel,note,velocity,true);
 					break;
 				}
 			} while (++o < end);
@@ -843,138 +1048,279 @@ void OnAfterTouchPoly(uint8_t channel, uint8_t note, uint8_t value) {
 }
 
 void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
-	if (!omniOn && channel != SYNTH_MIDICHANNEL) return;
+	// channel=99 is an indicator that the latching controllers should just set their value to value, not cycle through
+	// the various values for that parameter
+	if (!omniOn && channel != SYNTH_MIDICHANNEL && channel!=99) return;
 
-	if (control==0){
-		// bank select, do nothing (switch sounds via program change only)
-	} else if (control==2){
-		// attack
-		envAttack = value*11880./127.;
-		updateEnvelope();
-	} else if (control==3){
-		// decay
-		envDecay = value*11880./127.;
-		updateEnvelope();
-	} else if (control==4){
-		// sustain
-		envSustain = value/127.;
-		updateEnvelope();
-	} else if (control==5){
-		// release
-		envRelease = value*11880./127.;
-		updateEnvelope();
-	} else if (control==6){
-		// attack
-		env2Attack = value*5000./127.;
-		updateEnvelope2();
-	} else if (control==8){
-		// decay
-		env2Decay = value*5000./127.;
-		updateEnvelope2();
-	} else if (control==9){
-		// sustain
-		env2Sustain = value/127.;
-		updateEnvelope2();
-	} else if (control==12){
-		// release
-		env2Release = value*5000./127.;
-		updateEnvelope2();
-	} else if (control==13){
-		// portamento time
-		float portamentoRange = portamentoStep*portamentoTime;
-		portamentoTime = value*value*value;
-		portamentoStep = portamentoRange/portamentoTime;
-	} else if (control==14){
-		// volume
-		channelVolume = value/127.;
-		updateVolume();
-	} else if (control==15){
-		// layer mix
-		if (value>63) {
-			layerMix1 = map((1.0*value), 64., 127., 1., 0.);
-			layerMix2 = 1.;
-		} else {
-			layerMix1 = 1.;
-			layerMix2 = map((1.0*value), 63., 0., 1., 0.);
-		}
-		updateVolume();
-	} else if (control==16){
-		// LFO1 speed
-		float xSpeed = 1.-(value / 127.);
-		xSpeed = pow(100, (xSpeed - 1));
-		LFOspeed = (70000 * xSpeed)-500;
-	} else if (control==17){
-		// LFO1 depth
-		float xDepth = value / 127.;
-		LFOdepth = xDepth;
-	} else if (control==18){
+	// loop through params, see if this control channel controls a particular param
+	for (uint8_t c=0; c<PRG_COUNT_OF_VARS; ++c) {
+
 		// layer width
-		layerWidth = ((1+value)/127.);
-		updateLayer();
-	} else if (control==20){
-		// filter octaves
-		filtOct = 7.*value/127.;
-		updateFilter();
-	} else if (control==21){
-		// filter resonance
-		//filtReso = value*4.1/127.+0.9;
-		filtReso = (1.0*value)/127;
-		filtReso=map(filtReso, 0, 1, 1.11, 5.0);
-		updateFilter();
-	} else if (control==22){
-		// filter frequency
-		//filtFreq = value/2.5*AUDIO_SAMPLE_RATE_EXACT/127.;
-		filtFreq = (1.0*value)/127;
-		filtFreq=pow(filtFreq, 3)*17000;
-		updateFilter();
-	} else if (control==25){
-		// LFO mode
-		if (value>=127){
-			LFOmode++;
-			if (LFOmode>=LFO_COUNT_OF_MODES) LFOmode=0;
+		if (c==PRG_OSC2_TUNE && control==CC_PARAM_MAP[PRG_OSC2_TUNE]){
+			ProgramArr[c]=value;
+			layerWidth = ((1+value)/127.);
+			updateLayer();
 		}
-	} else if (control==26){
-		// osc1 waveform
-		if (value>=127){
-			osc1_wf++;
-			if (osc1_wf>=COUNT_OF_WAVEFORMS) osc1_wf=0;
-			updateWaveform();
+
+		// env attack
+		if (c==PRG_ENV_A && control==CC_PARAM_MAP[PRG_ENV_A]){
+			ProgramArr[c]=value;
+			envAttack = value*11880./127.;
+			updateEnvelope();
 		}
-	} else if (control==36){
-		// osc2 waveform
-		if (value>=127){
-			osc2_wf++;
-			if (osc2_wf>=COUNT_OF_WAVEFORMS) osc2_wf=0;
-			updateWaveform();
+
+		// env decay
+		if (c==PRG_ENV_D && control==CC_PARAM_MAP[PRG_ENV_D]){
+			ProgramArr[c]=value;
+			envDecay = value*11880./127.;
+			updateEnvelope();
 		}
-	} else if (control==31){
-		// filter mode
-		if (value>=127){
-			FILTERmode++;
-			if (FILTERmode >= FILTERMODE_COUNT_OF_MODES) FILTERmode=0;
-			updateFilterMode();
+
+		if (c==PRG_ENV_S && control==CC_PARAM_MAP[PRG_ENV_S]){
+			// sustain
+			ProgramArr[c]=value;
+			envSustain = value/127.;
+			updateEnvelope();
 		}
-	} else if (control==35){
-		// LFO shape
-		if (value>=127){
-			LFOshape++;
-			if (LFOshape>=LFO_COUNT_OF_SHAPES) LFOshape=0;
+
+		if (c==PRG_ENV_R && control==CC_PARAM_MAP[PRG_ENV_R]){
+			// release
+			ProgramArr[c]=value;
+			envRelease = value*11880./127.;
+			updateEnvelope();
 		}
-	} else if (control==23){
-		// poly mode
-		if (value>=127){
-			// turn on poly mode
-			polyOn=true;
-			portamentoOn=false;
-			updatePolyMode();
+
+		if (c==PRG_FILT_ENV_A && control==CC_PARAM_MAP[PRG_FILT_ENV_A]){
+			// filt attack
+			ProgramArr[c]=value;
+			env2Attack = value*5000./127.;
+			updateEnvelope2();
 		}
-	} else if (control==33){
-		// mono mode
-		if (value>=127){
-			// turn off poly mode
-			polyOn=false;
-			portamentoOn=true;
-			updatePolyMode();
+
+		if (c==PRG_FILT_ENV_D && control==CC_PARAM_MAP[PRG_FILT_ENV_D]){
+			// filt decay
+			ProgramArr[c]=value;
+			env2Decay = value*5000./127.;
+			updateEnvelope2();
+		}
+
+		if (c==PRG_FILT_ENV_S && control==CC_PARAM_MAP[PRG_FILT_ENV_S]){
+			// filt sustain
+			ProgramArr[c]=value;
+			env2Sustain = value/127.;
+			updateEnvelope2();
+		}
+
+		if (c==PRG_FILT_ENV_R && control==CC_PARAM_MAP[PRG_FILT_ENV_R]){
+			// filt release
+			ProgramArr[c]=value;
+			env2Release = value*5000./127.;
+			updateEnvelope2();
+		}
+
+		if (c==PRG_PORT_SPEED && control==CC_PARAM_MAP[PRG_PORT_SPEED]){
+			// portamento time
+			ProgramArr[c]=value;
+			float portamentoRange = portamentoStep*portamentoTime;
+			portamentoTime = value*value*value;
+			portamentoStep = portamentoRange/portamentoTime;
+		}
+
+		if (c==PRG_MASTER_VOL && control==CC_PARAM_MAP[PRG_MASTER_VOL]){
+			// volume
+			ProgramArr[c]=value;
+			channelVolume = value/127.;
+			updateVolume();
+		}
+
+		if (c==PRG_OSC_MIX && control==CC_PARAM_MAP[PRG_OSC_MIX]){
+			// layer mix
+			ProgramArr[c]=value;
+			if (value>63) {
+				layerMix1 = map((1.0*value), 64., 127., 1., 0.);
+				layerMix2 = 1.;
+			} else {
+				layerMix1 = 1.;
+				layerMix2 = map((1.0*value), 63., 0., 1., 0.);
+			}
+			updateVolume();
+		}
+
+		if (c==PRG_LFO_SPEED && control==CC_PARAM_MAP[PRG_LFO_SPEED]){
+			// LFO1 speed
+			ProgramArr[c]=value;
+			float xSpeed = 1.-(value / 127.);
+			xSpeed = pow(100, (xSpeed - 1));
+			LFOspeed = (70000 * xSpeed)-500;
+		}
+
+		if (c==PRG_LFO_DEPTH && control==CC_PARAM_MAP[PRG_LFO_DEPTH]){
+			// LFO1 depth
+			ProgramArr[c]=value;
+			float xDepth = value / 127.;
+			LFOdepth = xDepth;
+		}
+
+		if (c==PRG_FILT_OCT && control==CC_PARAM_MAP[PRG_FILT_OCT]){
+			// filter octaves
+			ProgramArr[c]=value;
+			filtOct = 7.*value/127.;
+			updateFilter();
+		}
+
+		if (c==PRG_FILT_RES && control==CC_PARAM_MAP[PRG_FILT_RES]){
+			// filter resonance
+			//filtReso = value*4.1/127.+0.9;
+			ProgramArr[c]=value;
+			filtReso = (1.0*value)/127;
+			filtReso=map(filtReso, 0, 1, 1.11, 5.0);
+			updateFilter();
+		}
+
+		if (c==PRG_FILT_FREQ && control==CC_PARAM_MAP[PRG_FILT_FREQ]){
+			// filter frequency
+			//filtFreq = value/2.5*AUDIO_SAMPLE_RATE_EXACT/127.;
+			ProgramArr[c]=value;
+			filtFreq = (1.0*value)/127;
+			filtFreq=pow(filtFreq, 3)*17000;
+			updateFilter();
+		}
+
+		if (c==PRG_LFO_MODE && control==CC_PARAM_MAP[PRG_LFO_MODE]){
+			// LFO mode
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				LFOmode=value;
+			} else if (value>=127){
+				LFOmode++;
+				if (LFOmode>=LFO_COUNT_OF_MODES) LFOmode=0;
+				ProgramArr[c]=LFOmode;
+			}
+		}
+
+		if (c==PRG_OSC1_WF && control==CC_PARAM_MAP[PRG_OSC1_WF]){
+			// osc1 waveform
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				osc1_wf=value;
+				updateWaveform();
+			} else if (value>=127){
+				osc1_wf++;
+				if (osc1_wf>=COUNT_OF_WAVEFORMS) osc1_wf=0;
+				ProgramArr[c]=osc1_wf;
+				updateWaveform();
+			}
+		}
+
+		if (c==PRG_OSC2_WF && control==CC_PARAM_MAP[PRG_OSC2_WF]){
+			// osc2 waveform
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				osc2_wf=value;
+				updateWaveform();
+			} else if (value>=127){
+				osc2_wf++;
+				if (osc2_wf>=COUNT_OF_WAVEFORMS) osc2_wf=0;
+				ProgramArr[c]=osc2_wf;
+				updateWaveform();
+			}
+		}
+
+		if (c==PRG_FILT_MODE && control==CC_PARAM_MAP[PRG_FILT_MODE]){
+			// filter mode
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				FILTERmode=value;
+				updateFilterMode();
+			} else if (value>=127){
+				FILTERmode++;
+				if (FILTERmode >= FILTERMODE_COUNT_OF_MODES) FILTERmode=0;
+				ProgramArr[c]=FILTERmode;
+				updateFilterMode();
+			}
+		}
+
+		if (c==PRG_LFO_SHAPE && control==CC_PARAM_MAP[PRG_LFO_SHAPE]){
+			// LFO shape
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				LFOshape=value;
+			} else if (value>=127){
+				LFOshape++;
+				if (LFOshape>=LFO_COUNT_OF_SHAPES) LFOshape=0;
+				ProgramArr[c]=LFOshape;
+			}
+		}
+
+		if (c==PRG_POLY_MODE && control==CC_PARAM_MAP[PRG_POLY_MODE]){
+			// poly mode
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				polyOn=value;
+				updatePolyMode();
+			} else if (value>=127){
+				if (polyOn){
+					// mono mode
+					// turn off poly mode
+					polyOn=false;
+					portamentoOn=true;
+					updatePolyMode();
+				} else {
+					// turn on poly mode
+					polyOn=true;
+					portamentoOn=false;
+					updatePolyMode();
+				}
+				ProgramArr[c]=polyOn;
+			}
+		}
+	}
+
+	if (control==45){
+		if (value >= 127){
+			// load patch
+			load_program();
+		}
+	} else if (control==44){
+		if (value >= 127){
+			// save patch
+			save_program();
+		}
+	} else if (control==47){
+		if (value >= 127){
+			// previous patch
+			// next patch
+			patch_number--;
+			if (patch_number<0) patch_number=0;
+#if SYNTH_DEBUG > 0
+	SYNTH_SERIAL.print("Next patch: ");
+	SYNTH_SERIAL.println(patch_number);
+#endif
+		}
+	} else if (control==48){
+		if (value >= 127){
+			// next patch
+			patch_number++;
+			if (patch_number>=50) patch_number=50;
+#if SYNTH_DEBUG > 0
+	SYNTH_SERIAL.print("Next patch: ");
+	SYNTH_SERIAL.println(patch_number);
+#endif
+		}
+	} else if (control==49){
+		if (value >= 127){
+			init_program();
+#if SYNTH_DEBUG > 0
+	SYNTH_SERIAL.println("init program:");
+#endif
+			for (uint8_t i=0; i<PRG_COUNT_OF_VARS; i++) {
+#if SYNTH_DEBUG > 0
+	SYNTH_SERIAL.print("ProgramArr[");
+	SYNTH_SERIAL.print(i);
+	SYNTH_SERIAL.print("]=");
+	SYNTH_SERIAL.println(ProgramArr[i]);
+#endif
+			}
 		}
 	} else if (control==64){
 		// sustain/damper pedal
@@ -986,16 +1332,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				if (o->note != -1 && !notesFind(notesPressed,o->note)) oscOff(*o);
 			} while (++o < end);
 		}
-	} else {
-#if SYNTH_DEBUG > 0
-		SYNTH_SERIAL.print("Unhandled Control Change: channel ");
-		SYNTH_SERIAL.print(channel);
-		SYNTH_SERIAL.print(", control ");
-		SYNTH_SERIAL.print(control);
-		SYNTH_SERIAL.print(", value ");
-		SYNTH_SERIAL.println(value);
-#endif
 	}
+
 	/*
 	case x: // pulse width
 		pulseWidth = (value/127.)*0.9+0.05;
@@ -1069,6 +1407,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 		pitchScale = 12./value;
 		break;
 	*/
+
 #if SYNTH_DEBUG > 0
 	SYNTH_SERIAL.print("Control Change: channel ");
 	SYNTH_SERIAL.print(channel);
@@ -1230,12 +1569,21 @@ void printInfo() {
 	SYNTH_SERIAL.println();
 	SYNTH_SERIAL.print("Filter Mode:          ");
 	SYNTH_SERIAL.println(FILTERmode);
+	SYNTH_SERIAL.print("Filter Octave:        ");
+	SYNTH_SERIAL.println(filtOct);
 	SYNTH_SERIAL.print("Filter Frequency:     ");
 	SYNTH_SERIAL.println(filtFreq);
 	SYNTH_SERIAL.print("Filter Resonance:     ");
 	SYNTH_SERIAL.println(filtReso);
 	SYNTH_SERIAL.print("Filter Attenuation:   ");
 	SYNTH_SERIAL.println(filtAtt);
+	SYNTH_SERIAL.println();
+	SYNTH_SERIAL.print("LFO Mode:          ");
+	SYNTH_SERIAL.println(LFOmode);
+	SYNTH_SERIAL.print("LFO Speed:     ");
+	SYNTH_SERIAL.println(LFOspeed);
+	SYNTH_SERIAL.print("LFO Depth:     ");
+	SYNTH_SERIAL.println(LFOdepth);
 	SYNTH_SERIAL.println();
 	SYNTH_SERIAL.print("Envelope On:          ");
 	SYNTH_SERIAL.println(envOn);
@@ -1346,13 +1694,14 @@ void setup() {
 	SYNTH_SERIAL.begin(115200);
 #endif
 	
+	init_cc_param_map();
+
 	AudioMemory(AMEMORY);
 	sgtl5000_1.enable();
 	sgtl5000_1.unmuteHeadphone();
 	sgtl5000_1.volume(masterVolume);
 
 	resetAll();
-	updateWaveform();
 
 	/*
 	flangerL.begin(delaylineL,DELAY_LENGTH,FLANGE_DELAY_PASSTHRU,0,0);
@@ -1437,7 +1786,8 @@ void loop() {
 #else
 	MIDI.read();
 #endif
-	// ns - no pot, so disable this for now
+
+	// ns - no pot, so disable updateMasterVolume for now
 	//updateMasterVolume();
   LFOupdate(false);
 	updatePortamento();
