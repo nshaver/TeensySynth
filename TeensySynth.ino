@@ -10,7 +10,7 @@
 //////////////////////////
 // oled - on esp8266 connect sda=d1 and scl=d2, connect 3.3v and ground
 //			- on nano connect sda=a4 and scl=a5, connect 5v and ground
-//			- on teensy connect sda=a4 and scl=a5, connect 5v and ground
+//			- on teensy connect sda=a4 and scl=a5, connect 5v or 3.3v and ground
 //////////////////////////
 #include <i2c_t3.h>
 //#include <SPI.h>
@@ -23,10 +23,10 @@
 #include <Fonts/TomThumb.h>
 #define OLED_RESET LED_BUILTIN
 Adafruit_SSD1306 display(128, 64, &Wire, OLED_RESET);
-unsigned long next_oled_update_ms=0;
 #endif
-// create these string vars regardless so we don't have to put so many ifdefs all over the place
+// create these particular oled vars regardless so we don't have to put so many ifdefs all over the place
 // text updates immediately, text1-4 update periodically via the bottom of the loop.
+unsigned long next_oled_update_ms=0;
 String text;
 String text1;
 String text2;
@@ -516,9 +516,11 @@ void set_program(){
 int8_t notesOn[NVOICES]      = { -1, -1, -1, -1, -1, -1, -1, -1, };
 int8_t notesPressed[NVOICES] = { -1, -1, -1, -1, -1, -1, -1, -1, };
 int8_t lastVelocity; // used for retrigger in mono mode of previously-held keys
+int8_t notes_pressed_now=0;
 
 inline void notesReset(int8_t* notes) {
 	memset(notes,-1,NVOICES*sizeof(int8_t));
+	notes_pressed_now=0;
 }
 
 inline void notesAdd(int8_t* notes, uint8_t note, uint8_t velocity) {
@@ -972,6 +974,12 @@ inline void oscOn(Oscillator& osc, int8_t note, uint8_t velocity) {
 		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*layerMix2);
 		osc.velocity = velocity;
 	}
+	if (polyOn) {
+		notes_pressed_now++;
+	} else {
+		notes_pressed_now=1;
+	}
+	text3=(String)"Notes = " + notes_pressed_now;;
 }
 
 inline void oscOff(Oscillator& osc) {
@@ -985,6 +993,8 @@ inline void oscOff(Oscillator& osc) {
 	notesDel(notesOn,osc.note);
 	osc.note = -1;
 	osc.velocity = 0;
+	notes_pressed_now--;
+	text3=(String)"Notes = " + notes_pressed_now;;
 }
 
 inline void allOff() {
@@ -1084,9 +1094,7 @@ Oscillator* OnNoteOffReal(uint8_t channel, uint8_t note, uint8_t velocity, bool 
 					portamentoStep = fabs(lastNote-portamentoPos)/(portamentoTime);
 				}
 				oscOn(*o, lastNote, velocity);
-			}
-			else 
-			{
+			} else {
 				oscOff(*o);
 				portamentoPos = -1;
 				portamentoDir = 0;
@@ -1151,6 +1159,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			layerWidth = ((1+value)/127.);
 			updateLayer();
 			text2=(String)"O2 Tune = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		// env attack
@@ -1232,6 +1242,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			channelVolume = value/127.;
 			updateVolume();
 			text2=(String)"Vol = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_OSC_MIX && control==CC_PARAM_MAP[PRG_OSC_MIX]){
@@ -1246,6 +1258,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			}
 			updateVolume();
 			text2=(String)"Osc Mix = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_LFO_SPEED && control==CC_PARAM_MAP[PRG_LFO_SPEED]){
@@ -1255,6 +1269,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			xSpeed = pow(100, (xSpeed - 1));
 			LFOspeed = (70000 * xSpeed)-500;
 			text2=(String)"LFO Sp = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_LFO_DEPTH && control==CC_PARAM_MAP[PRG_LFO_DEPTH]){
@@ -1263,6 +1279,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			float xDepth = value / 127.;
 			LFOdepth = xDepth;
 			text2=(String)"LFO Dp = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_FILT_OCT && control==CC_PARAM_MAP[PRG_FILT_OCT]){
@@ -1271,6 +1289,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtOct = 7.*value/127.;
 			updateFilter();
 			text2=(String)"F Oct = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_FILT_RES && control==CC_PARAM_MAP[PRG_FILT_RES]){
@@ -1281,6 +1301,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtReso=map(filtReso, 0, 1, 1.11, 5.0);
 			updateFilter();
 			text2=(String)"F Res = " + value;
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_FILT_FREQ && control==CC_PARAM_MAP[PRG_FILT_FREQ]){
@@ -1291,6 +1313,8 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtFreq=pow(filtFreq, 3)*17000;
 			updateFilter();
 			text2=(String)"F Freq = " + int(filtFreq);
+			// limit oled update speed for things that could cause a zippering to the sound
+			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 		}
 
 		if (c==PRG_LFO_MODE && control==CC_PARAM_MAP[PRG_LFO_MODE]){
@@ -1817,7 +1841,7 @@ void setup() {
 	// start oled setup
 	//////////////////////////////////////////////
 	Wire.setClock(2400000UL); // set i2c frequency to 400kHz
-	display.begin(SSD1306_SWITCHCAPVCC, 0x3C);	// for 128x64 use 0x3D, for 128x32 use 0x3C
+	display.begin(SSD1306_SWITCHCAPVCC, 0x3C);	// for 128x64 use 0x3C, for 128x32 use 0x3D
 	display.setFont(&FreeSans9pt7b);
 	text=(String)"Teensy Synth";
 	showtext(1, text, true);
@@ -1947,7 +1971,7 @@ void loop() {
 			showtext(4, text4, false);
 			text4="";
 		}
-		next_oled_update_ms=millis()+100;
+		next_oled_update_ms=millis()+50;
 	}
 #endif
 }
