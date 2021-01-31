@@ -3,7 +3,7 @@
 Forked from https://github.com/jmechnich/TeensySynth
 
 ### Changes from original fork
-* features three per-voice oscillators, each with tuning and volume
+* features three poscillators per voice, each with tuning and volume
 * added bandlimit waveforms to eliminate aliasing
 * added filter envelope
 * added noise generator
