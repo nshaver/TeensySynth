@@ -1,9 +1,11 @@
 #include <Audio.h>
-// use bandlimit waveforms from https://github.com/MarkTillotson/Audio/tree/band_limited_waveforms
-#define USE_BANDLIMIT_WAVEFORMS 1
-
+#include "square_table.h"
+#include "saw_table.h"
+#include "triangle_table.h"
 // set SYNTH_DEBUG to enable debug logging (1=most,2=all messages)
-#define SYNTH_DEBUG 0
+#define SYNTH_DEBUG 1
+
+//#define TEENSY_DAC_PT8211 1
 
 #define USE_OLED 1
 #ifdef USE_OLED
@@ -90,8 +92,9 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 // Data types and lookup tables
 //////////////////////////////////////////////////////////////////////
 struct Oscillator {
-	AudioSynthWaveform*       wf;
+	AudioSynthWaveform*       wf1;
 	AudioSynthWaveform*       wf2;
+	AudioSynthWaveform*       wf3;
 	AudioFilterStateVariable* filt;
 	AudioMixer4*              mix;
 	AudioEffectEnvelope*      env;
@@ -105,34 +108,16 @@ struct Oscillator {
 
 #define NVOICES 8
 Oscillator oscs[NVOICES] = {
-	{ &waveform1, &waveform9, &filter1, &mixer1, &envelope1,  &filt_env_1, -1, 0 },
-	{ &waveform2, &waveform10, &filter2, &mixer2, &envelope2, &filt_env_2, -1, 0 },
-	{ &waveform3, &waveform11, &filter3, &mixer3, &envelope3, &filt_env_3, -1, 0 },
-	{ &waveform4, &waveform12, &filter4, &mixer4, &envelope4, &filt_env_4, -1, 0 },
-	{ &waveform5, &waveform13, &filter5, &mixer5, &envelope5, &filt_env_5, -1, 0 },
-	{ &waveform6, &waveform14, &filter6, &mixer6, &envelope6, &filt_env_6, -1, 0 },
-	{ &waveform7, &waveform15, &filter7, &mixer7, &envelope7, &filt_env_7, -1, 0 },
-	{ &waveform8, &waveform16, &filter8, &mixer8, &envelope8, &filt_env_8, -1, 0 },
+	{ &waveform11, &waveform21, &waveform31, &filter1, &mixer1, &envelope1, &filt_env_1, -1, 0 },
+	{ &waveform12, &waveform22, &waveform32, &filter2, &mixer2, &envelope2, &filt_env_2, -1, 0 },
+	{ &waveform13, &waveform23, &waveform33, &filter3, &mixer3, &envelope3, &filt_env_3, -1, 0 },
+	{ &waveform14, &waveform24, &waveform34, &filter4, &mixer4, &envelope4, &filt_env_4, -1, 0 },
+	{ &waveform15, &waveform25, &waveform35, &filter5, &mixer5, &envelope5, &filt_env_5, -1, 0 },
+	{ &waveform16, &waveform26, &waveform36, &filter6, &mixer6, &envelope6, &filt_env_6, -1, 0 },
+	{ &waveform17, &waveform27, &waveform37, &filter7, &mixer7, &envelope7, &filt_env_7, -1, 0 },
+	{ &waveform18, &waveform28, &waveform38, &filter8, &mixer8, &envelope8, &filt_env_8, -1, 0 },
 };
 
-#ifdef USE_BANDLIMIT_WAVEFORMS
-#define COUNT_OF_WAVEFORMS 13
-uint16_t waveforms[COUNT_OF_WAVEFORMS] = {
-	WAVEFORM_SINE,
-	WAVEFORM_SAWTOOTH,
-	WAVEFORM_SQUARE,
-	WAVEFORM_TRIANGLE,
-	WAVEFORM_ARBITRARY,
-	WAVEFORM_PULSE,
-	WAVEFORM_SAWTOOTH_REVERSE,
-	WAVEFORM_SAMPLE_HOLD,
-	WAVEFORM_TRIANGLE_VARIABLE,
-	WAVEFORM_BANDLIMIT_SAWTOOTH,
-	WAVEFORM_BANDLIMIT_SAWTOOTH_REVERSE,
-	WAVEFORM_BANDLIMIT_SQUARE,
-	WAVEFORM_BANDLIMIT_PULSE,
-};
-#else
 #define COUNT_OF_WAVEFORMS 8
 uint8_t waveforms[COUNT_OF_WAVEFORMS] = {
 	WAVEFORM_SINE,
@@ -144,7 +129,6 @@ uint8_t waveforms[COUNT_OF_WAVEFORMS] = {
 	WAVEFORM_SAMPLE_HOLD,
 	WAVEFORM_ARBITRARY,
 };
-#endif
 
 enum FilterModes {
 	FILTERMODE_LOWPASS,
@@ -159,13 +143,21 @@ byte FILTERmode=FILTERMODE_LOWPASS;
 // Global variables
 //////////////////////////////////////////////////////////////////////
 float   masterVolume   = 0.8;
-#ifdef USE_BANDLIMIT_WAVEFORMS
-uint16_t osc1_wf = WAVEFORM_BANDLIMIT_SAWTOOTH;
-uint16_t osc2_wf = WAVEFORM_BANDLIMIT_SAWTOOTH;
-# else
-uint8_t osc1_wf = WAVEFORM_SAWTOOTH;
-uint8_t osc2_wf = WAVEFORM_SAWTOOTH;
-#endif
+uint8_t osc1_wf = WAVEFORM_ARBITRARY;
+uint8_t osc2_wf = WAVEFORM_ARBITRARY;
+uint8_t osc3_wf = WAVEFORM_ARBITRARY;
+
+enum waveform_selections {
+	WF_SELECT_SAWTOOTH,
+	WF_SELECT_SQUARE,
+	WF_SELECT_TRIANGLE,
+	WF_SELECT_STOCK_SQUARE,
+	WF_SELECT_STOCK_SINE,
+	WF_SELECT_COUNT_OF_SELECTS
+};
+uint8_t osc1_wf_select = WF_SELECT_SAWTOOTH;
+uint8_t osc2_wf_select = WF_SELECT_SAWTOOTH;
+uint8_t osc3_wf_select = WF_SELECT_SAWTOOTH;
 
 const float DIV127 = (1.0 / 127.0);
 
@@ -173,18 +165,23 @@ bool  polyOn;
 bool  omniOn;
 bool  velocityOn;
 
-float layerWidth;
-float layerMix1;
-float layerMix2;
+float oscTune1;
+float oscTune2;
+float oscTune3;
+float oscVol1;
+float oscVol2;
+float oscVol3;
 
 bool  sustainPressed;
 float channelVolume;
+
 float panorama;
 float pulseWidth; // 0.05-0.95
 float pitchBend;  // -1/+1 oct
 float pitchScale;
-int   octCorr;
 int		transpose;
+
+float noiseAmt;
 
 // LFO
 float LFO = 0;
@@ -249,13 +246,22 @@ int8_t   portamentoDir;
 float    portamentoStep;
 float    portamentoPos;
 
+//////////////////////////////////////////////////////////////////////
+// forward declaration of functions that have issues with compiling
+//////////////////////////////////////////////////////////////////////
+void OnControlChange(uint8_t channel, uint8_t control, uint8_t value);
+void set_program();
+inline void updatePolyMode();
+inline void updatePan();
+inline float noteToFreq(float note, int useLayer);
+
 #ifdef USE_OLED
 //////////////////////////////////////////////////////////////////////
 // OLED functions
 //////////////////////////////////////////////////////////////////////
 void showtext(int line_number, String text, boolean clearDisplay){
 	// if debugging is enabled then it makes sense to send this new text to the debug window
-#if SYNTH_DEBUG > 0
+#if SYNTH_DEBUG > 2
 			SYNTH_SERIAL.println(text);
 #endif
 
@@ -316,9 +322,13 @@ enum PROGRAMvars {
 	PRG_KEY_2,
 	PRG_OSC1_TUNE,
 	PRG_OSC2_TUNE,
-	PRG_OSC_MIX,
-	PRG_OSC1_WF,
-	PRG_OSC2_WF,
+	PRG_OSC3_TUNE,
+	PRG_OSC_MIX1,
+	PRG_OSC_MIX2,
+	PRG_OSC_MIX3,
+	PRG_OSC1_ARB,
+	PRG_OSC2_ARB,
+	PRG_OSC3_ARB,
 	PRG_PULSE_WIDTH,
 	PRG_PORT_SPEED,
 	PRG_POLY_MODE,
@@ -340,18 +350,20 @@ enum PROGRAMvars {
 	PRG_FILT_ENV_S,
 	PRG_FILT_ENV_R,
 	PRG_MASTER_VOL,
+	PRG_NOISE_AMT,
 	PRG_COUNT_OF_VARS
 };
 
 byte CC_PARAM_MAP[127]={};
 // map MIDI control channels to parameter control here
 void init_cc_param_map(){
-	CC_PARAM_MAP[PRG_OSC1_TUNE]		= 0;
-	CC_PARAM_MAP[PRG_OSC2_TUNE]		= 18;
-	CC_PARAM_MAP[PRG_OSC_MIX]			= 15;
-	CC_PARAM_MAP[PRG_OSC1_WF]			= 26;
-	CC_PARAM_MAP[PRG_OSC2_WF]			= 36;
-	CC_PARAM_MAP[PRG_PULSE_WIDTH]	= 0;
+	CC_PARAM_MAP[PRG_OSC1_TUNE]		= 88;
+	CC_PARAM_MAP[PRG_OSC2_TUNE]		= 89;
+	CC_PARAM_MAP[PRG_OSC3_TUNE]		= 90;
+	CC_PARAM_MAP[PRG_OSC_MIX1]		= 85;
+	CC_PARAM_MAP[PRG_OSC_MIX2]		= 86;
+	CC_PARAM_MAP[PRG_OSC_MIX3]		= 87;
+	CC_PARAM_MAP[PRG_PULSE_WIDTH]	= 92;
 	CC_PARAM_MAP[PRG_PORT_SPEED]	= 13;
 	CC_PARAM_MAP[PRG_POLY_MODE]		= 23;
 	CC_PARAM_MAP[PRG_FILT_FREQ]		= 22;
@@ -372,6 +384,10 @@ void init_cc_param_map(){
 	CC_PARAM_MAP[PRG_FILT_ENV_S]	= 9;
 	CC_PARAM_MAP[PRG_FILT_ENV_R]	= 12;
 	CC_PARAM_MAP[PRG_MASTER_VOL]	= 14;
+	CC_PARAM_MAP[PRG_OSC1_ARB]		= 107;
+	CC_PARAM_MAP[PRG_OSC2_ARB]		= 108;
+	CC_PARAM_MAP[PRG_OSC3_ARB]		= 109;
+	CC_PARAM_MAP[PRG_NOISE_AMT]		= 91;
 }
 
 // setup a key1/2 that will be used to verify whether or not a load from an eeprom 
@@ -384,12 +400,13 @@ void init_program(){
 	for (uint8_t i=0; i<PRG_COUNT_OF_VARS; i++) {
 		ProgramArr[PRG_KEY_1]=PROGRAM_KEY_1;
 		ProgramArr[PRG_KEY_2]=PROGRAM_KEY_2;
-		ProgramArr[PRG_OSC1_TUNE]=0;
-		ProgramArr[PRG_OSC2_TUNE]=0;
-		ProgramArr[PRG_OSC_MIX]=65;
-		ProgramArr[PRG_OSC1_WF]=WAVEFORM_BANDLIMIT_SAWTOOTH;
-		ProgramArr[PRG_OSC2_WF]=WAVEFORM_BANDLIMIT_SAWTOOTH;
-		ProgramArr[PRG_PULSE_WIDTH]=65;
+		ProgramArr[PRG_OSC1_TUNE]=64;
+		ProgramArr[PRG_OSC2_TUNE]=64;
+		ProgramArr[PRG_OSC3_TUNE]=64;
+		ProgramArr[PRG_OSC_MIX1]=127;
+		ProgramArr[PRG_OSC_MIX2]=127;
+		ProgramArr[PRG_OSC_MIX3]=127;
+		ProgramArr[PRG_PULSE_WIDTH]=64;
 		ProgramArr[PRG_PORT_SPEED]=0;
 		ProgramArr[PRG_POLY_MODE]=1;
 		ProgramArr[PRG_FILT_FREQ]=50;
@@ -397,8 +414,8 @@ void init_program(){
 		ProgramArr[PRG_FILT_OCT]=50;
 		ProgramArr[PRG_FILT_MODE]=FILTERMODE_LOWPASS;
 		ProgramArr[PRG_LFO_MODE]=LFO_MODE_OFF;
-		ProgramArr[PRG_LFO_SPEED]=65;
-		ProgramArr[PRG_LFO_DEPTH]=65;
+		ProgramArr[PRG_LFO_SPEED]=64;
+		ProgramArr[PRG_LFO_DEPTH]=64;
 		ProgramArr[PRG_LFO_SHAPE]=LFO_SINE;
 		ProgramArr[PRG_LFO_DEST]=0;
 		ProgramArr[PRG_ENV_A]=0;
@@ -410,6 +427,10 @@ void init_program(){
 		ProgramArr[PRG_FILT_ENV_S]=127;
 		ProgramArr[PRG_FILT_ENV_R]=0;
 		ProgramArr[PRG_MASTER_VOL]=127;
+		ProgramArr[PRG_OSC1_ARB]=0;
+		ProgramArr[PRG_OSC2_ARB]=0;
+		ProgramArr[PRG_OSC3_ARB]=0;
+		ProgramArr[PRG_NOISE_AMT]=0;
 	}
 	set_program();
 }
@@ -429,6 +450,10 @@ void save_program(){
 			SYNTH_SERIAL.print("patch_number ");
 			SYNTH_SERIAL.print(patch_number);
 			SYNTH_SERIAL.println(" saved");
+#endif
+#ifdef USE_OLED
+		text=(String)"Saved";
+		showtext(2, text, false);
 #endif
 	} else {
 #if SYNTH_DEBUG > 0
@@ -481,10 +506,6 @@ void load_program(){
 		SYNTH_SERIAL.print(patch_number);
 		SYNTH_SERIAL.println(" loaded");
 #endif
-#ifdef USE_OLED
-	text=(String)"Preset " + patch_number;
-	showtext(1, text, false);
-#endif
 	} else {
 #if SYNTH_DEBUG > 0
 		SYNTH_SERIAL.print("load_program: cannot load, invalid patch_number: ");
@@ -508,6 +529,13 @@ void set_program(){
 			OnControlChange(99, CC_PARAM_MAP[i], ProgramArr[i]);
 		}
 	}
+
+#ifdef USE_OLED
+	text=(String)"Preset " + patch_number;
+	showtext(1, text, false);
+	text=(String)"Loaded";
+	showtext(2, text, false);
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -721,14 +749,6 @@ void LFOupdate(bool retrig){
 			LFO=LFOnoshape;
 		}
 
-#if SYNTH_DEBUG > 3
-		SYNTH_SERIAL.print("LFO=");
-		SYNTH_SERIAL.print(LFO);
-		SYNTH_SERIAL.print("  LFOSPD=");
-		SYNTH_SERIAL.print(LFOspeed);
-		SYNTH_SERIAL.print("  depth=");
-		SYNTH_SERIAL.println(LFOdepth);
-#endif
 		updateFilter();
   }
 }
@@ -752,18 +772,21 @@ void resetAll() {
 	omniOn     = true;
 	velocityOn = true;
 
-	layerWidth = 1./127.;
-	layerMix1	 = 1.;
-	layerMix2	 = 1.;
+	oscTune1 = 1./127.;
+	oscTune2 = 1./127.;
+	oscTune3 = 1./127.;
+	oscVol1	 = 1.;
+	oscVol2	 = 1.;
+	oscVol3	 = 1.;
 
 	FILTERmode	 	 = FILTERMODE_LOWPASS;
 	sustainPressed = false;
 	channelVolume  = 1.0;
+	noiseAmt			 = 0.0;
 	panorama       = 0.5;
 	pulseWidth     = 0.5;
 	pitchBend      = 0;
 	pitchScale     = 1;
-	octCorr        = osc1_wf == WAVEFORM_PULSE ? 1 : 0;
 	transpose			 = 0; 
 
 	// filter
@@ -780,6 +803,16 @@ void resetAll() {
 	envDecay   = 0;
 	envSustain = 1;
 	envRelease = 0;
+
+	// noise
+	noise1.amplitude(0.0);
+	noise2.amplitude(0.0);
+	noise3.amplitude(0.0);
+	noise4.amplitude(0.0);
+	noise5.amplitude(0.0);
+	noise6.amplitude(0.0);
+	noise7.amplitude(0.0);
+	noise8.amplitude(0.0);
 
 	// dc, used for filter envelope
 	dc1.amplitude(1);
@@ -824,35 +857,37 @@ void resetAll() {
 }
 
 inline void updateWaveform() {
-	if (osc1_wf==WAVEFORM_PULSE) octCorr = 1;
-	else octCorr = 0;
-		
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
-		if (osc1_wf==WAVEFORM_PULSE || osc1_wf==WAVEFORM_BANDLIMIT_PULSE){
-			o->wf->pulseWidth(pulseWidth);
-		}
-		if (osc2_wf==WAVEFORM_PULSE || osc2_wf==WAVEFORM_BANDLIMIT_PULSE){
-			o->wf2->pulseWidth(pulseWidth);
-		}
-		o->wf->begin(waveforms[osc1_wf]);
+		if (osc1_wf==WAVEFORM_PULSE) o->wf1->pulseWidth(pulseWidth);
+		if (osc2_wf==WAVEFORM_PULSE) o->wf2->pulseWidth(pulseWidth);
+		if (osc3_wf==WAVEFORM_PULSE) o->wf3->pulseWidth(pulseWidth);
+		o->wf1->begin(waveforms[osc1_wf]);
 		o->wf2->begin(waveforms[osc2_wf]);
+		o->wf3->begin(waveforms[osc3_wf]);
 	} while(++o < end);
 }
 
 inline void updatePulseWidth() {
-	if (osc1_wf==WAVEFORM_PULSE || osc1_wf==WAVEFORM_BANDLIMIT_PULSE) {
+	if (osc1_wf==WAVEFORM_PULSE){
 		Oscillator *o=oscs,*end=oscs+NVOICES;
 		do {
 			if (o->note < 0) continue;
-			o->wf->pulseWidth(pulseWidth);
+			o->wf1->pulseWidth(pulseWidth);
 		} while(++o < end);
 	}
-	if (osc2_wf==WAVEFORM_PULSE || osc2_wf==WAVEFORM_BANDLIMIT_PULSE) {
+	if (osc2_wf==WAVEFORM_PULSE){
 		Oscillator *o=oscs,*end=oscs+NVOICES;
 		do {
 			if (o->note < 0) continue;
 			o->wf2->pulseWidth(pulseWidth);
+		} while(++o < end);
+	}
+	if (osc3_wf==WAVEFORM_PULSE){
+		Oscillator *o=oscs,*end=oscs+NVOICES;
+		do {
+			if (o->note < 0) continue;
+			o->wf3->pulseWidth(pulseWidth);
 		} while(++o < end);
 	}
 	return;
@@ -862,8 +897,30 @@ inline void updatePitch() {
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
 		if (o->note < 0) continue;
-		o->wf->frequency(noteToFreq(o->note, false));
-		o->wf2->frequency(noteToFreq(o->note, true));
+		if(osc1_wf_select==WF_SELECT_SAWTOOTH){
+			o->wf1->arbitraryWaveform(sawTable[o->note], 172);
+		} else if(osc1_wf_select==WF_SELECT_SQUARE){
+			o->wf1->arbitraryWaveform(squareTable[o->note], 172);
+		} else if(osc1_wf_select==WF_SELECT_TRIANGLE){
+			o->wf1->arbitraryWaveform(triangleTable[o->note], 172);
+		}
+		if(osc2_wf_select==WF_SELECT_SAWTOOTH){
+			o->wf2->arbitraryWaveform(sawTable[o->note], 172);
+		} else if(osc2_wf_select==WF_SELECT_SQUARE){
+			o->wf2->arbitraryWaveform(squareTable[o->note], 172);
+		} else if(osc2_wf_select==WF_SELECT_TRIANGLE){
+			o->wf2->arbitraryWaveform(triangleTable[o->note], 172);
+		}
+		if(osc3_wf_select==WF_SELECT_SAWTOOTH){
+			o->wf3->arbitraryWaveform(sawTable[o->note], 172);
+		} else if(osc3_wf_select==WF_SELECT_SQUARE){
+			o->wf3->arbitraryWaveform(squareTable[o->note], 172);
+		} else if(osc3_wf_select==WF_SELECT_TRIANGLE){
+			o->wf3->arbitraryWaveform(triangleTable[o->note], 172);
+		}
+		o->wf1->frequency(noteToFreq(o->note, 1));
+		o->wf2->frequency(noteToFreq(o->note, 2));
+		o->wf3->frequency(noteToFreq(o->note, 3));
 	} while(++o < end);
 }
 
@@ -871,9 +928,42 @@ inline void updateLayer() {
 	Oscillator *o=oscs,*end=oscs+NVOICES;
 	do {
 		if (o->note < 0) continue;
-		o->wf->frequency(noteToFreq(o->note, false));
-		o->wf2->frequency(noteToFreq(o->note, true));
+		if(osc1_wf_select==WF_SELECT_SAWTOOTH){
+			o->wf1->arbitraryWaveform(sawTable[o->note], 172);
+		} else if(osc1_wf_select==WF_SELECT_SQUARE){
+			o->wf1->arbitraryWaveform(squareTable[o->note], 172);
+		} else if(osc1_wf_select==WF_SELECT_TRIANGLE){
+			o->wf1->arbitraryWaveform(triangleTable[o->note], 172);
+		}
+		if(osc2_wf_select==WF_SELECT_SAWTOOTH){
+			o->wf2->arbitraryWaveform(sawTable[o->note], 172);
+		} else if(osc2_wf_select==WF_SELECT_SQUARE){
+			o->wf2->arbitraryWaveform(squareTable[o->note], 172);
+		} else if(osc2_wf_select==WF_SELECT_TRIANGLE){
+			o->wf2->arbitraryWaveform(triangleTable[o->note], 172);
+		}
+		if(osc3_wf_select==WF_SELECT_SAWTOOTH){
+			o->wf3->arbitraryWaveform(sawTable[o->note], 172);
+		} else if(osc3_wf_select==WF_SELECT_SQUARE){
+			o->wf3->arbitraryWaveform(squareTable[o->note], 172);
+		} else if(osc3_wf_select==WF_SELECT_TRIANGLE){
+			o->wf3->arbitraryWaveform(triangleTable[o->note], 172);
+		}
+		o->wf1->frequency(noteToFreq(o->note, 1));
+		o->wf2->frequency(noteToFreq(o->note, 2));
+		o->wf3->frequency(noteToFreq(o->note, 3));
 	} while(++o < end);
+}
+
+inline void updateNoiseAmt() {
+	noise1.amplitude(noiseAmt);
+	noise2.amplitude(noiseAmt);
+	noise3.amplitude(noiseAmt);
+	noise4.amplitude(noiseAmt);
+	noise5.amplitude(noiseAmt);
+	noise6.amplitude(noiseAmt);
+	noise7.amplitude(noiseAmt);
+	noise8.amplitude(noiseAmt);
 }
 
 inline void updateVolume() {
@@ -882,8 +972,9 @@ inline void updateVolume() {
 	do {
 		if (o->note < 0) continue;
 		velocity = velocityOn ? o->velocity/127. : 1;
-		o->wf->amplitude(velocity*channelVolume*GAIN_OSC*layerMix1);
-		o->wf2->amplitude(velocity*channelVolume*GAIN_OSC*layerMix2);
+		o->wf1->amplitude(velocity*channelVolume*GAIN_OSC*oscVol1);
+		o->wf2->amplitude(velocity*channelVolume*GAIN_OSC*oscVol2);
+		o->wf3->amplitude(velocity*channelVolume*GAIN_OSC*oscVol3);
 	} while(++o < end);
 }
 
@@ -904,12 +995,45 @@ inline void updateMasterVolume() {
 	float vol = (float) analogRead(A1) / 1280.0;
 	if( fabs(vol-masterVolume) > 0.01) {
 		masterVolume = vol;
+#ifdef TEENSY_DAC_PT8211
+#else
 		sgtl5000_1.volume(masterVolume);
-#if SYNTH_DEBUG > 0
+#endif
+
+#if SYNTH_DEBUG > 1
 		SYNTH_SERIAL.print("Volume: ");
 		SYNTH_SERIAL.println(vol);
 #endif
 	}
+}
+
+inline void oscOff(Oscillator& osc) {
+	if (envOn) {
+		osc.env->noteOff();
+	} else {
+		osc.wf1->amplitude(0);
+		osc.wf2->amplitude(0);
+		osc.wf3->amplitude(0);
+	}
+	if (env2On) osc.env2->noteOff();
+	notesDel(notesOn,osc.note);
+	osc.note = -1;
+	osc.velocity = 0;
+	notes_pressed_now--;
+	text3=(String)"Notes = " + notes_pressed_now;;
+}
+
+inline void allOff() {
+	Oscillator *o=oscs,*end=oscs+NVOICES;
+	do {
+		oscOff(*o);
+		o->wf1->amplitude(0);
+		o->wf2->amplitude(0);
+		o->wf3->amplitude(0);
+		o->env->noteOff();
+		o->env2->noteOff();
+	} while(++o < end);
+	notesReset(notesOn);
 }
 
 inline void updatePolyMode() {
@@ -937,22 +1061,45 @@ inline void updatePortamento() {
 			portamentoDir = 0;
 		}
 	}
-	oscs->wf->frequency(noteToFreq(portamentoPos, false));
-	oscs->wf2->frequency(noteToFreq(portamentoPos, true));
+	oscs->wf1->frequency(noteToFreq(portamentoPos, 1));
+	oscs->wf2->frequency(noteToFreq(portamentoPos, 2));
+	oscs->wf3->frequency(noteToFreq(portamentoPos, 3));
 }
 
 //////////////////////////////////////////////////////////////////////
 // Oscillator control functions
 //////////////////////////////////////////////////////////////////////
-inline float noteToFreq(float note, bool useLayer) {
+inline float noteToFreq(float note, int useLayer) {
 	note=note+transpose;
 	// Sets all notes as an offset of A4 (#69)
 	if (portamentoOn) note = portamentoPos;
-	float thisFreq=SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale+octCorr);
-	if (useLayer==true){
-		thisFreq=thisFreq*(1+layerWidth);
+	float thisFreq=SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale);
+	if (useLayer==1){
+		if (oscTune1>0.55){
+			thisFreq=thisFreq*(map(oscTune1, 0.55, 1.0, 1.0, 2.0));
+		} else if (oscTune1<0.45){
+			thisFreq=thisFreq*(map(oscTune1, 0.45, 0.0, 1.0, 0.5));
+		} else {
+			// do not adjust, give room in middle for zero
+		}
+	} else if (useLayer==2){
+		if (oscTune2>0.55){
+			thisFreq=thisFreq*(map(oscTune2, 0.55, 1.0, 1.0, 2.0));
+		} else if (oscTune2<0.45){
+			thisFreq=thisFreq*(map(oscTune2, 0.45, 0.0, 1.0, 0.5));
+		} else {
+			// do not adjust, give room in middle for zero
+		}
+	} else if (useLayer==3){
+		if (oscTune3>0.55){
+			thisFreq=thisFreq*(map(oscTune3, 0.55, 1.0, 1.0, 2.0));
+		} else if (oscTune3<0.45){
+			thisFreq=thisFreq*(map(oscTune3, 0.45, 0.0, 1.0, 0.5));
+		} else {
+			// do not adjust, give room in middle for zero
+		}
 	} else {
-		thisFreq=SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale+octCorr);
+		thisFreq=SYNTH_TUNING*pow(2,(note - 69)/12.+pitchBend/pitchScale);
 	}
 	return thisFreq;
 }
@@ -960,18 +1107,46 @@ inline float noteToFreq(float note, bool useLayer) {
 inline void oscOn(Oscillator& osc, int8_t note, uint8_t velocity) {
 	float v = velocityOn ? velocity/127. : 1;
 	if (osc.note!=note) {
-		osc.wf->frequency(noteToFreq(note, false));
-		osc.wf2->frequency(noteToFreq(note, true));
+		if(osc1_wf_select==WF_SELECT_SAWTOOTH){
+			osc.wf1->arbitraryWaveform(sawTable[note], 172);
+		} else if(osc1_wf_select==WF_SELECT_SQUARE){
+			osc.wf1->arbitraryWaveform(squareTable[note], 172);
+		} else if(osc1_wf_select==WF_SELECT_TRIANGLE){
+			osc.wf1->arbitraryWaveform(triangleTable[note], 172);
+		}
+		if(osc2_wf_select==WF_SELECT_SAWTOOTH){
+			osc.wf2->arbitraryWaveform(sawTable[note], 172);
+		} else if(osc2_wf_select==WF_SELECT_SQUARE){
+			osc.wf2->arbitraryWaveform(squareTable[note], 172);
+		} else if(osc2_wf_select==WF_SELECT_TRIANGLE){
+			osc.wf2->arbitraryWaveform(triangleTable[note], 172);
+		}
+		if(osc3_wf_select==WF_SELECT_SAWTOOTH){
+			osc.wf3->arbitraryWaveform(sawTable[note], 172);
+		} else if(osc3_wf_select==WF_SELECT_SQUARE){
+			osc.wf3->arbitraryWaveform(squareTable[note], 172);
+		} else if(osc3_wf_select==WF_SELECT_TRIANGLE){
+			osc.wf3->arbitraryWaveform(triangleTable[note], 172);
+		}
+
+		osc.wf1->frequency(noteToFreq(note, 1));
+		osc.wf2->frequency(noteToFreq(note, 2));
+		osc.wf3->frequency(noteToFreq(note, 3));
+
 		notesAdd(notesOn,note,velocity);
 		if (envOn && !osc.velocity) osc.env->noteOn();
 		if (env2On) osc.env2->noteOn();
-		osc.wf->amplitude(v*channelVolume*GAIN_OSC*layerMix1);
-		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*layerMix2);
+
+		osc.wf1->amplitude(v*channelVolume*GAIN_OSC*oscVol1);
+		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*oscVol2);
+		osc.wf3->amplitude(v*channelVolume*GAIN_OSC*oscVol3);
+
 		osc.velocity = velocity;
 		osc.note = note;
 	} else if (velocity > osc.velocity) {
-		osc.wf->amplitude(v*channelVolume*GAIN_OSC*layerMix1);
-		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*layerMix2);
+		osc.wf1->amplitude(v*channelVolume*GAIN_OSC*oscVol1);
+		osc.wf2->amplitude(v*channelVolume*GAIN_OSC*oscVol2);
+		osc.wf3->amplitude(v*channelVolume*GAIN_OSC*oscVol3);
 		osc.velocity = velocity;
 	}
 	if (polyOn) {
@@ -982,90 +1157,9 @@ inline void oscOn(Oscillator& osc, int8_t note, uint8_t velocity) {
 	text3=(String)"Notes = " + notes_pressed_now;;
 }
 
-inline void oscOff(Oscillator& osc) {
-	if (envOn) {
-		osc.env->noteOff();
-	} else {
-		osc.wf->amplitude(0);
-		osc.wf2->amplitude(0);
-	}
-	if (env2On) osc.env2->noteOff();
-	notesDel(notesOn,osc.note);
-	osc.note = -1;
-	osc.velocity = 0;
-	notes_pressed_now--;
-	text3=(String)"Notes = " + notes_pressed_now;;
-}
-
-inline void allOff() {
-	Oscillator *o=oscs,*end=oscs+NVOICES;
-	do {
-		oscOff(*o);
-		o->wf->amplitude(0);
-		o->wf2->amplitude(0);
-		o->env->noteOff();
-		o->env2->noteOff();
-	} while(++o < end);
-	notesReset(notesOn);
-}
-
 //////////////////////////////////////////////////////////////////////
 // MIDI handlers
 //////////////////////////////////////////////////////////////////////
-void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
-	if (!omniOn && channel != SYNTH_MIDICHANNEL) return;
-
-#if SYNTH_DEBUG > 1
-	SYNTH_SERIAL.println("NoteOn");
-#endif
-
-	notesAdd(notesPressed,note,velocity);
-	LFOupdate(true);
-
-	Oscillator *o=oscs;
-	if (portamentoOn) {
-		if (portamentoTime == 0 || portamentoPos < 0) {
-			portamentoPos = note;
-			portamentoDir = 0;
-		} else if (portamentoPos > -1) {
-			portamentoDir  = note > portamentoPos ? 1 : -1;
-			portamentoStep = fabs(note-portamentoPos)/(portamentoTime);
-		}
-		*notesOn = -1;
-		oscOn(*o, note, velocity);
-	} else if (polyOn) {
-		Oscillator *curOsc=0, *end=oscs+NVOICES;
-		if (sustainPressed && notesFind(notesOn,note)) {
-			do {
-				if (o->note == note) {
-					// need to retrigger a sustained note. turn off and reuse this osc below when it retriggers.
-					curOsc = OnNoteOffReal(channel,note,velocity,true);
-					break;
-				}
-			} while (++o < end);
-		}
-		for (o=oscs; o < end && !curOsc; ++o) {
-			if (o->note < 0) {
-				curOsc = o;
-				break;
-			}
-		}
-		if (!curOsc && *notesOn != -1) {
-#if SYNTH_DEBUG > 0
-			SYNTH_SERIAL.println("Stealing voice");
-#endif
-			curOsc = OnNoteOffReal(channel,*notesOn,velocity,true);
-		}
-		if (!curOsc) return;
-		oscOn(*curOsc, note, velocity);
-	} else {
-		*notesOn = -1;
-		oscOn(*o, note, velocity);
-	}
-
-	return;
-}
-
 Oscillator* OnNoteOffReal(uint8_t channel, uint8_t note, uint8_t velocity, bool ignoreSustain) {
 	if (!omniOn && channel != SYNTH_MIDICHANNEL) return 0;
 
@@ -1130,12 +1224,66 @@ Oscillator* OnNoteOffReal(uint8_t channel, uint8_t note, uint8_t velocity, bool 
 	return o;
 }
 
+void OnNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
+	if (!omniOn && channel != SYNTH_MIDICHANNEL) return;
+
+#if SYNTH_DEBUG > 1
+	SYNTH_SERIAL.println("NoteOn");
+#endif
+
+	notesAdd(notesPressed,note,velocity);
+	LFOupdate(true);
+
+	Oscillator *o=oscs;
+	if (portamentoOn) {
+		if (portamentoTime == 0 || portamentoPos < 0) {
+			portamentoPos = note;
+			portamentoDir = 0;
+		} else if (portamentoPos > -1) {
+			portamentoDir  = note > portamentoPos ? 1 : -1;
+			portamentoStep = fabs(note-portamentoPos)/(portamentoTime);
+		}
+		*notesOn = -1;
+		oscOn(*o, note, velocity);
+	} else if (polyOn) {
+		Oscillator *curOsc=0, *end=oscs+NVOICES;
+		if (sustainPressed && notesFind(notesOn,note)) {
+			do {
+				if (o->note == note) {
+					// need to retrigger a sustained note. turn off and reuse this osc below when it retriggers.
+					curOsc = OnNoteOffReal(channel,note,velocity,true);
+					break;
+				}
+			} while (++o < end);
+		}
+		for (o=oscs; o < end && !curOsc; ++o) {
+			if (o->note < 0) {
+				curOsc = o;
+				break;
+			}
+		}
+		if (!curOsc && *notesOn != -1) {
+#if SYNTH_DEBUG > 1
+			SYNTH_SERIAL.println("Stealing voice");
+#endif
+			curOsc = OnNoteOffReal(channel,*notesOn,velocity,true);
+		}
+		if (!curOsc) return;
+		oscOn(*curOsc, note, velocity);
+	} else {
+		*notesOn = -1;
+		oscOn(*o, note, velocity);
+	}
+
+	return;
+}
+
 inline void OnNoteOff(uint8_t channel, uint8_t note, uint8_t velocity) {
 	OnNoteOffReal(channel,note,velocity,false);
 }
 
 void OnAfterTouchPoly(uint8_t channel, uint8_t note, uint8_t value) {
-#if SYNTH_DEBUG > 0
+#if SYNTH_DEBUG > 1
 	SYNTH_SERIAL.print("AfterTouchPoly: channel ");
 	SYNTH_SERIAL.print(channel);
 	SYNTH_SERIAL.print(", note ");
@@ -1153,30 +1301,59 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 	// loop through params, see if this control channel controls a particular param
 	for (uint8_t c=0; c<PRG_COUNT_OF_VARS; ++c) {
 
-		// layer width
+		// osc tune
+		if (c==PRG_OSC1_TUNE && control==CC_PARAM_MAP[PRG_OSC1_TUNE]){
+			ProgramArr[c]=value;
+			oscTune1 = value/127.;
+			updateLayer();
+			if (channel<99){
+				text2=(String)"O1 Tune = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
+		}
+
 		if (c==PRG_OSC2_TUNE && control==CC_PARAM_MAP[PRG_OSC2_TUNE]){
 			ProgramArr[c]=value;
-			layerWidth = ((1+value)/127.);
+			oscTune2 = value/127.;
 			updateLayer();
-			text2=(String)"O2 Tune = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"O2 Tune = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
+		}
+
+		if (c==PRG_OSC3_TUNE && control==CC_PARAM_MAP[PRG_OSC3_TUNE]){
+			ProgramArr[c]=value;
+			oscTune3 = value/127.;
+			updateLayer();
+			if (channel<99){
+				text2=(String)"O3 Tune = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
 		// env attack
 		if (c==PRG_ENV_A && control==CC_PARAM_MAP[PRG_ENV_A]){
 			ProgramArr[c]=value;
-			envAttack = value*11880./127.;
+			// adding 0.0001 to hopefully stop the clicking
+			envAttack = 0.0001+(value*5000./127.);
 			updateEnvelope();
-			text2=(String)"Env A = " + value;
+			if (channel<99){
+				text2=(String)"Env A = " + value;
+			}
 		}
 
 		// env decay
 		if (c==PRG_ENV_D && control==CC_PARAM_MAP[PRG_ENV_D]){
 			ProgramArr[c]=value;
-			envDecay = value*11880./127.;
+			envDecay = value*5000./127.;
 			updateEnvelope();
-			text2=(String)"Env D = " + value;
+			if (channel<99){
+				text2=(String)"Env D = " + value;
+			}
 		}
 
 		if (c==PRG_ENV_S && control==CC_PARAM_MAP[PRG_ENV_S]){
@@ -1184,23 +1361,29 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			envSustain = value/127.;
 			updateEnvelope();
-			text2=(String)"Env S = " + value;
+			if (channel<99){
+				text2=(String)"Env S = " + value;
+			}
 		}
 
 		if (c==PRG_ENV_R && control==CC_PARAM_MAP[PRG_ENV_R]){
 			// release
 			ProgramArr[c]=value;
-			envRelease = value*11880./127.;
+			// adding 0.0001 to hopefully stop the clicking
+			envRelease = 0.0001+(value*5000./127.);
 			updateEnvelope();
-			text2=(String)"Env R = " + value;
+			if (channel<99){
+				text2=(String)"Env R = " + value;
+			}
 		}
 
 		if (c==PRG_FILT_ENV_A && control==CC_PARAM_MAP[PRG_FILT_ENV_A]){
 			// filt attack
 			ProgramArr[c]=value;
-			env2Attack = value*5000./127.;
+			// adding 0.0001 to hopefully stop the clicking
+			env2Attack = 0.0001+(value*5000./127.);
 			updateEnvelope2();
-			text2=(String)"FEnv A = " + value;
+			if (channel<99) text2=(String)"FEnv A = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_D && control==CC_PARAM_MAP[PRG_FILT_ENV_D]){
@@ -1208,7 +1391,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			env2Decay = value*5000./127.;
 			updateEnvelope2();
-			text2=(String)"FEnv D = " + value;
+			if (channel<99) text2=(String)"FEnv D = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_S && control==CC_PARAM_MAP[PRG_FILT_ENV_S]){
@@ -1216,15 +1399,16 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			env2Sustain = value/127.;
 			updateEnvelope2();
-			text2=(String)"FEnv S = " + value;
+			if (channel<99) text2=(String)"FEnv S = " + value;
 		}
 
 		if (c==PRG_FILT_ENV_R && control==CC_PARAM_MAP[PRG_FILT_ENV_R]){
 			// filt release
 			ProgramArr[c]=value;
-			env2Release = value*5000./127.;
+			// adding 0.0001 to hopefully stop the clicking
+			env2Release = 0.0001+(value*5000./127.);
 			updateEnvelope2();
-			text2=(String)"FEnv R = " + value;
+			if (channel<99) text2=(String)"FEnv R = " + value;
 		}
 
 		if (c==PRG_PORT_SPEED && control==CC_PARAM_MAP[PRG_PORT_SPEED]){
@@ -1233,7 +1417,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			float portamentoRange = portamentoStep*portamentoTime;
 			portamentoTime = value*value*value;
 			portamentoStep = portamentoRange/portamentoTime;
-			text2=(String)"Port = " + value;
+			if (channel<99) text2=(String)"Port = " + value;
 		}
 
 		if (c==PRG_MASTER_VOL && control==CC_PARAM_MAP[PRG_MASTER_VOL]){
@@ -1241,25 +1425,60 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			channelVolume = value/127.;
 			updateVolume();
-			text2=(String)"Vol = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"Vol = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
-		if (c==PRG_OSC_MIX && control==CC_PARAM_MAP[PRG_OSC_MIX]){
-			// layer mix
+		if (c==PRG_NOISE_AMT && control==CC_PARAM_MAP[PRG_NOISE_AMT]){
+			// noise amt
 			ProgramArr[c]=value;
-			if (value>63) {
-				layerMix1 = map((1.0*value), 64., 127., 1., 0.);
-				layerMix2 = 1.;
-			} else {
-				layerMix1 = 1.;
-				layerMix2 = map((1.0*value), 63., 0., 1., 0.);
+			noiseAmt = value/127.;
+			updateNoiseAmt();
+
+			if (channel<99){
+				text2=(String)"Noise = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
 			}
+		}
+
+		if (c==PRG_OSC_MIX1 && control==CC_PARAM_MAP[PRG_OSC_MIX1]){
+			// osc volume
+			ProgramArr[c]=value;
+			oscVol1 = value/127.;
 			updateVolume();
-			text2=(String)"Osc Mix = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"O1 Vol = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
+		}
+
+		if (c==PRG_OSC_MIX2 && control==CC_PARAM_MAP[PRG_OSC_MIX2]){
+			// osc volume
+			ProgramArr[c]=value;
+			oscVol2 = value/127.;
+			updateVolume();
+			if (channel<99){
+				text2=(String)"O2 Vol = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
+		}
+
+		if (c==PRG_OSC_MIX3 && control==CC_PARAM_MAP[PRG_OSC_MIX3]){
+			// osc volume
+			ProgramArr[c]=value;
+			oscVol3 = value/127.;
+			updateVolume();
+			if (channel<99){
+				text2=(String)"O3 Vol = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
 		if (c==PRG_LFO_SPEED && control==CC_PARAM_MAP[PRG_LFO_SPEED]){
@@ -1268,9 +1487,11 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			float xSpeed = 1.-(value / 127.);
 			xSpeed = pow(100, (xSpeed - 1));
 			LFOspeed = (70000 * xSpeed)-500;
-			text2=(String)"LFO Sp = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"LFO Sp = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
 		if (c==PRG_LFO_DEPTH && control==CC_PARAM_MAP[PRG_LFO_DEPTH]){
@@ -1278,9 +1499,18 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			float xDepth = value / 127.;
 			LFOdepth = xDepth;
-			text2=(String)"LFO Dp = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"LFO Dp = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
+		}
+
+		if (c==PRG_PULSE_WIDTH && control==CC_PARAM_MAP[PRG_PULSE_WIDTH]){
+			pulseWidth = (value/127.)*0.9+0.05;
+			updatePulseWidth();
+			ProgramArr[c]=pulseWidth;
+			if (channel<99) text2=(String)"PWidth= " + pulseWidth;
 		}
 
 		if (c==PRG_FILT_OCT && control==CC_PARAM_MAP[PRG_FILT_OCT]){
@@ -1288,9 +1518,11 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			ProgramArr[c]=value;
 			filtOct = 7.*value/127.;
 			updateFilter();
-			text2=(String)"F Oct = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"F Oct = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
 		if (c==PRG_FILT_RES && control==CC_PARAM_MAP[PRG_FILT_RES]){
@@ -1300,9 +1532,11 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtReso = (1.0*value)/127;
 			filtReso=map(filtReso, 0, 1, 1.11, 5.0);
 			updateFilter();
-			text2=(String)"F Res = " + value;
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"F Res = " + value;
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
 		if (c==PRG_FILT_FREQ && control==CC_PARAM_MAP[PRG_FILT_FREQ]){
@@ -1312,9 +1546,11 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			filtFreq = (1.0*value)/127;
 			filtFreq=pow(filtFreq, 3)*17000;
 			updateFilter();
-			text2=(String)"F Freq = " + int(filtFreq);
-			// limit oled update speed for things that could cause a zippering to the sound
-			if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			if (channel<99){
+				text2=(String)"F Freq = " + int(filtFreq);
+				// limit oled update speed for things that could cause a zippering to the sound
+				if (notes_pressed_now>0) next_oled_update_ms=millis()+200;
+			}
 		}
 
 		if (c==PRG_LFO_MODE && control==CC_PARAM_MAP[PRG_LFO_MODE]){
@@ -1330,34 +1566,106 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 			}
 		}
 
-		if (c==PRG_OSC1_WF && control==CC_PARAM_MAP[PRG_OSC1_WF]){
-			// osc1 waveform
+		if (c==PRG_OSC1_ARB && control==CC_PARAM_MAP[PRG_OSC1_ARB]){
+			// osc1 arbitrary waveform selection
 			if (channel==99){
 				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
-				osc1_wf=value;
-				updateWaveform();
+				osc1_wf_select=value;
 			} else if (value>=127){
-				osc1_wf++;
-				if (osc1_wf>=COUNT_OF_WAVEFORMS) osc1_wf=0;
-				ProgramArr[c]=osc1_wf;
-				updateWaveform();
-				text2=(String)"WF1 = " + osc1_wf;
+				osc1_wf_select++;
+				if (osc1_wf_select>=WF_SELECT_COUNT_OF_SELECTS) osc1_wf_select=0;
+				ProgramArr[c]=osc1_wf_select;
 			}
+
+			// handle arbitrary waveforms vs stock waveforms
+			if (osc1_wf_select==WF_SELECT_STOCK_SQUARE){
+				osc1_wf=WAVEFORM_PULSE;
+				if (channel<99) text2=(String)"WF1 = PULSE"; 
+			} else if (osc1_wf_select==WF_SELECT_STOCK_SINE){
+				osc1_wf=WAVEFORM_SINE;
+				if (channel<99) text2=(String)"WF1 = SINE"; 
+			} else if (osc1_wf_select==WF_SELECT_SAWTOOTH){
+				// 7 == arbitrary index
+				osc1_wf=7;
+				if (channel<99) text2=(String)"WF1 = SAW";
+			} else if (osc1_wf_select==WF_SELECT_SQUARE){
+				// 7 == arbitrary index
+				osc1_wf=7;
+				if (channel<99) text2=(String)"WF1 = SQUARE";
+			} else if (osc1_wf_select==WF_SELECT_TRIANGLE){
+				// 7 == arbitrary index
+				osc1_wf=7;
+				if (channel<99) text2=(String)"WF1 = TRI";
+			}
+			updateWaveform();
 		}
 
-		if (c==PRG_OSC2_WF && control==CC_PARAM_MAP[PRG_OSC2_WF]){
-			// osc2 waveform
+		if (c==PRG_OSC2_ARB && control==CC_PARAM_MAP[PRG_OSC2_ARB]){
+			// osc2 arbitrary waveform selection
 			if (channel==99){
 				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
-				osc2_wf=value;
-				updateWaveform();
+				osc2_wf_select=value;
 			} else if (value>=127){
-				osc2_wf++;
-				if (osc2_wf>=COUNT_OF_WAVEFORMS) osc2_wf=0;
-				ProgramArr[c]=osc2_wf;
-				updateWaveform();
-				text2=(String)"WF2 = " + osc2_wf;
+				osc2_wf_select++;
+				if (osc2_wf_select>=WF_SELECT_COUNT_OF_SELECTS) osc2_wf_select=0;
+				ProgramArr[c]=osc2_wf_select;
 			}
+
+			// handle arbitrary waveforms vs stock waveforms
+			if (osc2_wf_select==WF_SELECT_STOCK_SQUARE){
+				osc2_wf=WAVEFORM_PULSE;
+				if (channel<99) text2=(String)"WF2 = PULSE"; 
+			} else if (osc2_wf_select==WF_SELECT_STOCK_SINE){
+				osc2_wf=WAVEFORM_SINE;
+				if (channel<99) text2=(String)"WF2 = SINE"; 
+			} else if (osc2_wf_select==WF_SELECT_SAWTOOTH){
+				// 7 == arbitrary index
+				osc2_wf=7;
+				if (channel<99) text2=(String)"WF2 = SAW";
+			} else if (osc2_wf_select==WF_SELECT_SQUARE){
+				// 7 == arbitrary index
+				osc2_wf=7;
+				if (channel<99) text2=(String)"WF2 = SQUARE";
+			} else if (osc2_wf_select==WF_SELECT_TRIANGLE){
+				// 7 == arbitrary index
+				osc2_wf=7;
+				if (channel<99) text2=(String)"WF2 = TRI";
+			}
+			updateWaveform();
+		}
+
+		if (c==PRG_OSC3_ARB && control==CC_PARAM_MAP[PRG_OSC3_ARB]){
+			// osc3 arbitrary waveform selection
+			if (channel==99){
+				// loading a specific value, assuming 127 only is used when latch button is pressed on midi controller
+				osc3_wf_select=value;
+			} else if (value>=127){
+				osc3_wf_select++;
+				if (osc3_wf_select>=WF_SELECT_COUNT_OF_SELECTS) osc3_wf_select=0;
+				ProgramArr[c]=osc3_wf_select;
+			}
+
+			// handle arbitrary waveforms vs stock waveforms
+			if (osc3_wf_select==WF_SELECT_STOCK_SQUARE){
+				osc3_wf=WAVEFORM_PULSE;
+				if (channel<99) text2=(String)"WF3 = PULSE"; 
+			} else if (osc3_wf_select==WF_SELECT_STOCK_SINE){
+				osc3_wf=WAVEFORM_SINE;
+				if (channel<99) text2=(String)"WF3 = SINE"; 
+			} else if (osc3_wf_select==WF_SELECT_SAWTOOTH){
+				// 7 == arbitrary index
+				osc3_wf=7;
+				if (channel<99) text2=(String)"WF3 = SAW";
+			} else if (osc3_wf_select==WF_SELECT_SQUARE){
+				// 7 == arbitrary index
+				osc3_wf=7;
+				if (channel<99) text2=(String)"WF3 = SQUARE";
+			} else if (osc3_wf_select==WF_SELECT_TRIANGLE){
+				// 7 == arbitrary index
+				osc3_wf=7;
+				if (channel<99) text2=(String)"WF3 = TRI";
+			}
+			updateWaveform();
 		}
 
 		if (c==PRG_FILT_MODE && control==CC_PARAM_MAP[PRG_FILT_MODE]){
@@ -1371,9 +1679,10 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				if (FILTERmode >= FILTERMODE_COUNT_OF_MODES) FILTERmode=0;
 				ProgramArr[c]=FILTERmode;
 				updateFilterMode();
-				text2=(String)"F Mode = " + FILTERmode;
+				if (channel<99) text2=(String)"F Mode = " + FILTERmode;
 			}
 		}
+
 
 		if (c==PRG_LFO_SHAPE && control==CC_PARAM_MAP[PRG_LFO_SHAPE]){
 			// LFO shape
@@ -1384,7 +1693,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 				LFOshape++;
 				if (LFOshape>=LFO_COUNT_OF_SHAPES) LFOshape=0;
 				ProgramArr[c]=LFOshape;
-				text2=(String)"LFO Shape = " + LFOshape;
+				if (channel<99) text2=(String)"LFO Shape = " + LFOshape;
 			}
 		}
 
@@ -1401,13 +1710,13 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 					polyOn=false;
 					portamentoOn=true;
 					updatePolyMode();
-					text2=(String)"Poly Mode Off";
+					if (channel<99) text2=(String)"Poly Mode Off";
 				} else {
 					// turn on poly mode
 					polyOn=true;
 					portamentoOn=false;
 					updatePolyMode();
-					text2=(String)"Poly Mode On";
+					if (channel<99) text2=(String)"Poly Mode On";
 				}
 				ProgramArr[c]=polyOn;
 			}
@@ -1549,7 +1858,7 @@ void OnControlChange(uint8_t channel, uint8_t control, uint8_t value) {
 		break;
 	*/
 
-#if SYNTH_DEBUG > 0
+#if SYNTH_DEBUG > 1
 	SYNTH_SERIAL.print("Control Change: channel ");
 	SYNTH_SERIAL.print(channel);
 	SYNTH_SERIAL.print(", control ");
@@ -1596,7 +1905,7 @@ void OnProgramChange(uint8_t channel, uint8_t program) {
 void OnAfterTouch(uint8_t channel, uint8_t pressure) {
 	if (!omniOn && channel!=SYNTH_MIDICHANNEL) return;
 
-#if SYNTH_DEBUG > 0
+#if SYNTH_DEBUG > 1
 	SYNTH_SERIAL.print("AfterTouch: channel ");
 	SYNTH_SERIAL.print(channel);
 	SYNTH_SERIAL.print(", pressure ");
@@ -1605,7 +1914,7 @@ void OnAfterTouch(uint8_t channel, uint8_t pressure) {
 }
 
 void OnSysEx( const uint8_t *data, uint16_t length, bool complete) {
-#if SYNTH_DEBUG > 0
+#if SYNTH_DEBUG > 1
 	SYNTH_SERIAL.print("SysEx: length ");
 	SYNTH_SERIAL.print(length);
 	SYNTH_SERIAL.print(", complete ");
@@ -1614,7 +1923,7 @@ void OnSysEx( const uint8_t *data, uint16_t length, bool complete) {
 }
 
 void OnRealTimeSystem(uint8_t realtimebyte) {
-#if SYNTH_DEBUG > 0
+#if SYNTH_DEBUG > 1
 	SYNTH_SERIAL.print("RealTimeSystem: ");
 	SYNTH_SERIAL.println(realtimebyte);
 #endif
@@ -1637,6 +1946,7 @@ void OnTimeCodeQFrame(uint16_t data)
 float   statsCpu = 0;
 uint8_t statsMem = 0;
 
+/*
 void oscDump(uint8_t idx) {
 	SYNTH_SERIAL.print("Oscillator ");
 	SYNTH_SERIAL.print(idx);
@@ -1649,6 +1959,7 @@ void oscDump(const Oscillator& o) {
 	SYNTH_SERIAL.print(", velocity=");
 	SYNTH_SERIAL.println(o.velocity);  
 }
+*/
 
 inline void notesDump(int8_t* notes) {
 	for (uint8_t i=0; i<NVOICES; ++i) {
@@ -1689,8 +2000,12 @@ void printInfo() {
 	SYNTH_SERIAL.println(masterVolume);
 	SYNTH_SERIAL.print("OSC1 Waveform  :      ");
 	SYNTH_SERIAL.println(osc1_wf);
-	SYNTH_SERIAL.print("OSC2 Waveform  :      ");
+	SYNTH_SERIAL.print("OSC2 Waveform:        ");
 	SYNTH_SERIAL.println(osc2_wf);
+	SYNTH_SERIAL.print("OSC3 Waveform:        ");
+	SYNTH_SERIAL.println(osc3_wf);
+	SYNTH_SERIAL.print("Noise Amount:         ");
+	SYNTH_SERIAL.println(noiseAmt);
 	SYNTH_SERIAL.print("Poly On:              ");
 	SYNTH_SERIAL.println(polyOn);
 	SYNTH_SERIAL.print("Omni On:              ");
@@ -1799,7 +2114,7 @@ void selectCommand(char c) {
 	case 'o':
 		// print oscillator status
 		for (uint8_t i=0; i<NVOICES; ++i)
-				oscDump(i);
+				//oscDump(i);
 		break;
 	case 's':
 		// print cpu and mem usage
@@ -1850,9 +2165,12 @@ void setup() {
 	init_cc_param_map();
 
 	AudioMemory(AMEMORY);
+#ifdef TEENSY_DAC_PT8211
+#else
 	sgtl5000_1.enable();
 	sgtl5000_1.unmuteHeadphone();
 	sgtl5000_1.volume(masterVolume);
+#endif
 
 	resetAll();
 
@@ -1879,6 +2197,15 @@ void setup() {
 	mixer14.gain(1, 1);
 	mixer15.gain(1, 1);
 	mixer16.gain(1, 1);
+
+	mixer9.gain(2, 1);
+	mixer10.gain(2, 1);
+	mixer11.gain(2, 1);
+	mixer12.gain(2, 1);
+	mixer13.gain(2, 1);
+	mixer14.gain(2, 1);
+	mixer15.gain(2, 1);
+	mixer16.gain(2, 1);
 
 #ifdef USB_MIDI
 	// see arduino/hardware/teensy/avr/libraries/USBHost_t36/USBHost_t36.h
